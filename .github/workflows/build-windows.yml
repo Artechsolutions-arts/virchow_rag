@@ -41,6 +41,7 @@ jobs:
             --height 900 `
             --icon virchow_icon.png `
             --enable-find `
+            --inject inject.js `
             --activation-shortcut "CmdOrControl+Shift+V"
         shell: pwsh
 
