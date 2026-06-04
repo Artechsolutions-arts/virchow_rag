@@ -36,7 +36,7 @@ jobs:
       - name: Build Windows app
         run: |
           npx pake-cli http://192.168.10.99:3000 `
-            --name "Virchow Wiki" `
+            --name "Virchows Wiki" `
             --width 1440 `
             --height 900 `
             --icon virchow_icon.png `
