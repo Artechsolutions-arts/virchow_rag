@@ -1,0 +1,182 @@
+import "./globals.css";
+
+import {
+  fetchEnterpriseSettingsSS,
+  fetchSettingsSS,
+} from "@/components/settings/lib";
+import {
+  CUSTOM_ANALYTICS_ENABLED,
+  GTM_ENABLED,
+  SERVER_SIDE_ONLY__PAID_ENTERPRISE_FEATURES_ENABLED,
+  NEXT_PUBLIC_CLOUD_ENABLED,
+  MODAL_ROOT_ID,
+} from "@/lib/constants";
+import { Metadata } from "next";
+
+import { Inter, DM_Sans } from "next/font/google";
+import { EnterpriseSettings, ApplicationStatus } from "@/interfaces/settings";
+import AppProvider from "@/providers/AppProvider";
+import { PHProvider } from "./providers";
+import { getAuthTypeMetadataSS, getCurrentUserSS } from "@/lib/userSS";
+import { Suspense } from "react";
+import PostHogPageView from "./PostHogPageView";
+import Script from "next/script";
+import { WebVitals } from "./web-vitals";
+import { ThemeProvider } from "next-themes";
+import CloudError from "@/components/errorPages/CloudErrorPage";
+import Error from "@/components/errorPages/ErrorPage";
+import GatedContentWrapper from "@/components/GatedContentWrapper";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { fetchAppSidebarMetadata } from "@/lib/appSidebarSS";
+import StatsOverlayLoader from "@/components/dev/StatsOverlayLoader";
+import AppHealthBanner from "@/sections/AppHealthBanner";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  variable: "--font-dm-sans",
+  display: "swap",
+});
+
+export async function generateMetadata(): Promise<Metadata> {
+  let logoLocation = "/virchow_logo.svg";
+  let enterpriseSettings: EnterpriseSettings | null = null;
+  if (SERVER_SIDE_ONLY__PAID_ENTERPRISE_FEATURES_ENABLED) {
+    enterpriseSettings = await (await fetchEnterpriseSettingsSS()).json();
+    logoLocation =
+      enterpriseSettings && enterpriseSettings.use_custom_logo
+        ? "/api/enterprise-settings/logo"
+        : "/virchow_logo.svg";
+  }
+
+  return {
+    title: enterpriseSettings?.application_name || "Virchow",
+    description: "Virchow - Enterprise Search & Intelligence",
+    icons: {
+      icon: logoLocation,
+    },
+  };
+}
+
+export const dynamic = "force-dynamic";
+
+export default async function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const [combinedSettings, user, authTypeMetadata] = await Promise.all([
+    fetchSettingsSS(),
+    getCurrentUserSS(),
+    getAuthTypeMetadataSS(),
+  ]);
+
+  const { folded } = await fetchAppSidebarMetadata(user);
+
+  const productGating =
+    combinedSettings?.settings.application_status ?? ApplicationStatus.ACTIVE;
+
+  const getPageContent = async (content: React.ReactNode) => (
+    <html
+      lang="en"
+      className={`${inter.variable} ${dmSans.variable}`}
+      suppressHydrationWarning
+    >
+      <head>
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0, interactive-widget=resizes-content"
+        />
+        {CUSTOM_ANALYTICS_ENABLED &&
+          combinedSettings?.customAnalyticsScript && (
+            <script
+              type="text/javascript"
+              dangerouslySetInnerHTML={{
+                __html: combinedSettings.customAnalyticsScript,
+              }}
+            />
+          )}
+
+        {GTM_ENABLED && (
+          <Script
+            id="google-tag-manager"
+            strategy="afterInteractive"
+            dangerouslySetInnerHTML={{
+              __html: `
+               (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+               new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+               j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+               'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+               })(window,document,'script','dataLayer','GTM-PZXS36NG');
+             `,
+            }}
+          />
+        )}
+      </head>
+
+      <body className={`relative ${inter.variable} font-dm-sans`}>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <div className="text-text min-h-screen bg-background">
+            <TooltipProvider>
+              <PHProvider>
+                <AppHealthBanner />
+                {content}
+              </PHProvider>
+            </TooltipProvider>
+          </div>
+        </ThemeProvider>
+      </body>
+    </html>
+  );
+
+  if (!combinedSettings) {
+    return getPageContent(
+      NEXT_PUBLIC_CLOUD_ENABLED ? <CloudError /> : <Error />
+    );
+  }
+
+  // When gated, wrap children in GatedContentWrapper which checks the path
+  // client-side and shows AccessRestrictedPage for non-billing paths.
+  //
+  // Trade-off: Server components still render and attempt API calls before the
+  // client-side check runs. This is safe because the backend license enforcement
+  // middleware returns 402 for all non-allowlisted API calls, preventing data
+  // leakage. The user sees a brief loading state before being redirected.
+  const content =
+    productGating === ApplicationStatus.GATED_ACCESS ||
+    productGating === ApplicationStatus.SEAT_LIMIT_EXCEEDED ? (
+      <GatedContentWrapper>{children}</GatedContentWrapper>
+    ) : (
+      children
+    );
+
+  return getPageContent(
+    <AppProvider
+      authTypeMetadata={authTypeMetadata}
+      user={user}
+      settings={combinedSettings}
+      folded={folded}
+    >
+      <Suspense fallback={null}>
+        <PostHogPageView />
+      </Suspense>
+      <div id={MODAL_ROOT_ID} className="h-screen w-screen">
+        {content}
+      </div>
+      {process.env.NEXT_PUBLIC_POSTHOG_KEY && <WebVitals />}
+      {process.env.NEXT_PUBLIC_ENABLE_STATS === "true" && (
+        <StatsOverlayLoader />
+      )}
+    </AppProvider>
+  );
+}

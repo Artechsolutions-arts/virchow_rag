@@ -1,0 +1,67 @@
+import { Button } from "@opal/components";
+import { Disabled } from "@opal/core";
+import Text from "@/refresh-components/texts/Text";
+import { SvgChevronLeft, SvgChevronRight } from "@opal/icons";
+const DISABLED_MESSAGE = "Wait for agent message to complete";
+
+interface MessageSwitcherProps {
+  currentPage: number;
+  totalPages: number;
+  handlePrevious: () => void;
+  handleNext: () => void;
+  disableForStreaming?: boolean;
+}
+
+export default function MessageSwitcher({
+  currentPage,
+  totalPages,
+  handlePrevious,
+  handleNext,
+  disableForStreaming,
+}: MessageSwitcherProps) {
+  const handle = (num: number, callback: () => void) =>
+    disableForStreaming
+      ? undefined
+      : currentPage === num
+        ? undefined
+        : callback;
+  const previous = handle(1, handlePrevious);
+  const next = handle(totalPages, handleNext);
+
+  return (
+    <div
+      className="flex flex-row items-center gap-1"
+      data-testid="MessageSwitcher/container"
+    >
+      <Disabled disabled={disableForStreaming}>
+        <Button
+          icon={SvgChevronLeft}
+          onClick={previous}
+          prominence="tertiary"
+          tooltip={disableForStreaming ? DISABLED_MESSAGE : "Previous"}
+        />
+      </Disabled>
+
+      <div className="flex flex-row items-center justify-center">
+        <Text as="p" text03 mainUiAction>
+          {currentPage}
+        </Text>
+        <Text as="p" text03 mainUiAction>
+          /
+        </Text>
+        <Text as="p" text03 mainUiAction>
+          {totalPages}
+        </Text>
+      </div>
+
+      <Disabled disabled={disableForStreaming}>
+        <Button
+          icon={SvgChevronRight}
+          onClick={next}
+          prominence="tertiary"
+          tooltip={disableForStreaming ? DISABLED_MESSAGE : "Next"}
+        />
+      </Disabled>
+    </div>
+  );
+}

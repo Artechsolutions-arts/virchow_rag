@@ -1,0 +1,36 @@
+# Model weights (8GB — mount via docker-compose volumes)
+weights/
+
+# Uploaded PDFs (temp landing area)
+ingest/uploads/
+
+# Built desktop app installers
+*.dmg
+*.exe
+*.msi
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+venv_native/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Environment secrets
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Editor / local tooling
+.claude/
+.gstack/
+.vscode/

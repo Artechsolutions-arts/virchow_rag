@@ -1,0 +1,65 @@
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+PG_HOST     = os.getenv("PG_HOST",     "postgres")
+PG_PORT     = int(os.getenv("PG_PORT", "5432"))
+PG_DATABASE = os.getenv("PG_DATABASE", "virchow_dev")
+PG_USER     = os.getenv("PG_USER",     "postgres")
+PG_PASSWORD = os.getenv("PG_PASSWORD", "postgres")
+
+EMBEDDING_MODEL    = "qwen3-embedding:8b"
+EMBEDDING_DIM      = 4096
+OLLAMA_BASE_URL    = "http://localhost:11434"
+OLLAMA_EMBED_MODEL = "qwen3-embedding:8b"
+
+_INSECURE_JWT_DEFAULT = "change-this-secret-in-production"
+
+# Max allowed question length (chars) — prevents DoS via oversized inputs
+MAX_QUESTION_LENGTH = 2000
+
+
+class RAGConfig:
+    def __init__(self):
+        self.embedding_model      = os.getenv("EMBEDDING_MODEL",    EMBEDDING_MODEL)
+        self.embedding_dim        = int(os.getenv("EMBEDDING_DIM", str(EMBEDDING_DIM)))
+        self.embedding_device     = os.getenv("EMBEDDING_DEVICE",  "cpu")
+        self.ollama_base_url      = os.getenv("OLLAMA_BASE_URL",   OLLAMA_BASE_URL)
+        self.ollama_embed_model   = os.getenv("OLLAMA_EMBED_MODEL", OLLAMA_EMBED_MODEL)
+        self.top_k_retrieval      = int(os.getenv("TOP_K", "20"))
+        self.similarity_threshold = float(os.getenv("SIM_THRESHOLD", "0.45"))
+        # LLM (Ollama-compatible endpoint)
+        self.llm_url              = os.getenv("LLM_URL", "http://ollama:11434")
+        self.llm_model            = os.getenv("LLM_MODEL", "qwen2.5:latest")
+        self.max_tokens           = int(os.getenv("MAX_TOKENS", "2048"))
+        self.temperature          = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+        # JWT
+        self.jwt_secret           = os.getenv("JWT_SECRET", _INSECURE_JWT_DEFAULT)
+        self.jwt_algorithm        = "HS256"
+        self.jwt_expire_hours     = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
+        # ColPali visual search — disable when not needed to avoid 3B model CPU load blocking queries
+        self.enable_colpali       = os.getenv("ENABLE_COLPALI", "false").lower() == "true"
+        # SeaweedFS
+        self.seaweedfs_filer_url  = os.getenv("SEAWEEDFS_FILER_URL", "http://192.168.10.10:889")
+        self.seaweedfs_bucket     = os.getenv("SEAWEEDFS_BUCKET", "rag-docs")
+        # CORS — comma-separated list of allowed origins
+        raw_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+        self.cors_origins         = [o.strip() for o in raw_origins.split(",") if o.strip()]
+        # OCR quality thresholds (tune after Phase 0 validation)
+        self.ocr_quality_min      = float(os.getenv("OCR_QUALITY_MIN", "0.3"))
+        self.ocr_quality_penalty_max = float(os.getenv("OCR_QUALITY_PENALTY_MAX", "0.6"))
+        # DotsOCR local model weights (HF mode — no vLLM server needed)
+        self.dotsocr_weights_path = os.getenv("DOTSOCR_WEIGHTS_PATH", "/app/weights/DotsOCR")
+        # Complete backend ingestion service (handles OCR + chunking + embedding via MPS)
+        # Empty string means disabled — rag_pipeline falls back to its own BackgroundTasks ingestion.
+        self.ingest_url = os.getenv("INGEST_URL", "").rstrip("/")
+
+        if self.jwt_secret == _INSECURE_JWT_DEFAULT:
+            logger.warning(
+                "JWT_SECRET is using the insecure default value. "
+                "Set the JWT_SECRET environment variable before going to production."
+            )
+
+
+cfg = RAGConfig()

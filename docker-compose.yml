@@ -1,0 +1,202 @@
+services:
+
+  # ── Redis — job state & SSE pub/sub ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: virchow_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── RabbitMQ — ingestion job queue ───────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: virchow_rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 5672 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  # ── Ingestion API (port 8000) — OCR → chunk → embed → pgvector ───────────────
+  ingest-api:
+    build:
+      context: ./ingest
+    image: virchow_ingest:latest
+    container_name: virchow_ingest_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      RUN_TYPE: api
+      PG_HOST: "192.168.10.10"
+      PG_PORT: "5433"
+      PG_DATABASE: virchow_dev
+      PG_USER: postgres
+      PG_PASSWORD: "Eppl$$456!"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      RABBIT_HOST: rabbitmq
+      RABBIT_PORT: "5672"
+      RABBIT_USER: guest
+      RABBIT_PASS: guest
+      RABBIT_VHOST: /
+      SEAWEEDFS_MASTER_URL: http://192.168.10.10:933
+      SEAWEEDFS_FILER_URL: http://192.168.10.10:889
+      SEAWEEDFS_S3_ENDPOINT: http://192.168.10.10:833
+      SEAWEEDFS_BUCKET: rag-docs
+      SEAWEEDFS_ACCESS_KEY: anykey
+      SEAWEEDFS_SECRET_KEY: anysecret
+      EMBEDDING_MODEL: qwen3-embedding:8b
+      EMBEDDING_DIM: "4096"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBED_MODEL: qwen3-embedding:8b
+      DOTS_OCR_USE_HF: "true"
+      DOTS_OCR_WEIGHTS: /app/weights/DotsOCR
+      DOTS_OCR_PROMPT_MODE: prompt_layout_all_en
+      LOG_LEVEL: INFO
+      UPLOAD_WORKERS: "2"
+    volumes:
+      - ./ingest/uploads:/app/uploads
+      - ./dots_ocr:/app/dots_ocr:ro
+      - ./weights:/app/weights:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  # ── Ingestion Worker — consumes RabbitMQ jobs ─────────────────────────────────
+  # On macOS (Mac Studio M3), prefer the native runner instead:
+  #   docker compose stop ingest-worker
+  #   cd ingest && bash run_native.sh
+  # The native runner uses MPS (Apple Silicon GPU) for OCR/embedding,
+  # giving ~5-10x faster throughput. The Docker worker uses CPU only.
+  # Run native + Docker simultaneously if you want: they share the same queue.
+  ingest-worker:
+    build:
+      context: ./ingest
+    image: virchow_ingest:latest
+    container_name: virchow_ingest_worker
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    environment:
+      RUN_TYPE: worker
+      PG_HOST: "192.168.10.10"
+      PG_PORT: "5433"
+      PG_DATABASE: virchow_dev
+      PG_USER: postgres
+      PG_PASSWORD: "Eppl$$456!"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      RABBIT_HOST: rabbitmq
+      RABBIT_PORT: "5672"
+      RABBIT_USER: guest
+      RABBIT_PASS: guest
+      RABBIT_VHOST: /
+      SEAWEEDFS_MASTER_URL: http://192.168.10.10:933
+      SEAWEEDFS_FILER_URL: http://192.168.10.10:889
+      SEAWEEDFS_S3_ENDPOINT: http://192.168.10.10:833
+      SEAWEEDFS_BUCKET: rag-docs
+      SEAWEEDFS_ACCESS_KEY: anykey
+      SEAWEEDFS_SECRET_KEY: anysecret
+      EMBEDDING_MODEL: qwen3-embedding:8b
+      EMBEDDING_DIM: "4096"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBED_MODEL: qwen3-embedding:8b
+      DOTS_OCR_USE_HF: "true"
+      DOTS_OCR_WEIGHTS: /app/weights/DotsOCR
+      DOTS_OCR_PROMPT_MODE: prompt_layout_all_en
+      N_SEQ_WORKERS: "2"
+      LOG_LEVEL: INFO
+      UPLOAD_WORKERS: "2"
+      HF_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+    volumes:
+      - ./ingest/uploads:/app/uploads
+      - ./dots_ocr:/app/dots_ocr:ro
+      - ./weights:/app/weights:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # ── Retrieval API (port 8080) — vector search + LLM answer generation ─────────
+  retrieval:
+    build: ./retrieval
+    container_name: virchow_retrieval
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PG_HOST: "192.168.10.10"
+      PG_PORT: "5433"
+      PG_DATABASE: virchow_dev
+      PG_USER: postgres
+      PG_PASSWORD: 'Eppl$456!'
+      LLM_URL: http://host.docker.internal:11434
+      LLM_MODEL: qwen2.5:14b-instruct
+      JWT_SECRET: change-this-in-production
+      EMBEDDING_MODEL: qwen3-embedding:8b
+      EMBEDDING_DIM: "4096"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_EMBED_MODEL: qwen3-embedding:8b
+      MAX_TOKENS: "4096"
+      SIM_THRESHOLD: "0.38"
+      TOP_K: "8"
+      SEAWEEDFS_FILER_URL: http://192.168.10.10:889
+      SEAWEEDFS_BUCKET: rag-docs
+      INGEST_URL: http://ingest-api:8000
+    depends_on:
+      ingest-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\" 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 360s
+
+  # ── Next.js Frontend (port 3000) ──────────────────────────────────────────────
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        INTERNAL_URL: http://retrieval:8080
+    container_name: virchow_web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      INTERNAL_URL: http://retrieval:8080
+      SEAWEEDFS_FILER_URL: http://192.168.10.10:889
+      SEAWEEDFS_BUCKET: rag-docs
+    depends_on:
+      retrieval:
+        condition: service_healthy
+
+  # ── Ollama LLM (runs on host — not containerized) ─────────────────────────────
+  # Access via host.docker.internal:11434 — start with: ollama serve
+
+volumes: {}
