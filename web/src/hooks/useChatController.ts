@@ -696,7 +696,17 @@ export default function useChatController({
             sources.length > 0
               ? `\n\nSources:\n${sources
                   .map((source) => {
-                    const href = source.url || `/md-chunks-source/${encodeURIComponent(source.doc_id)}`;
+                    // Convert direct SeaweedFS URLs (http://host:port/.../raw/file)
+                    // to the Next.js proxy so links work in the desktop app (Pake/Tauri)
+                    // without needing OS-level shell.open for private IPs.
+                    let href = source.url || `/md-chunks-source/${encodeURIComponent(source.doc_id)}`;
+                    try {
+                      const u = new URL(href);
+                      const rawIdx = u.pathname.indexOf("/raw/");
+                      if (rawIdx !== -1) {
+                        href = `/api/chat/file/${u.pathname.slice(rawIdx + 5)}`;
+                      }
+                    } catch (_) {}
                     return `- [${source.source_file}](${href})`;
                   })
                   .join("\n")}`
