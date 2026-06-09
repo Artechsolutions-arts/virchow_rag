@@ -61,6 +61,11 @@ function showUpdateBanner(latestVersion) {
     return;
   }
 
+  const youHave =
+    CURRENT_VERSION === '__APP_VERSION__' || !CURRENT_VERSION
+      ? 'local build'
+      : CURRENT_VERSION;
+
   const banner = document.createElement('div');
   banner.id = 'vw-update-banner';
   banner.style.cssText = [
@@ -75,7 +80,7 @@ function showUpdateBanner(latestVersion) {
     'box-shadow:0 2px 8px rgba(0,0,0,0.15)'
   ].join(';');
   banner.innerHTML = `
-    <span>A new version of Virchows Wiki is available: <strong>${latestVersion}</strong> (you have ${CURRENT_VERSION})</span>
+    <span>A new version of Virchows Wiki is available: <strong>${latestVersion}</strong> (you have ${youHave})</span>
     <button id="vw-update-download" style="background:#fff;color:#0ea5e9;border:none;padding:6px 14px;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;">Download</button>
     <button id="vw-update-dismiss" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.4);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px;">Later</button>
   `;
@@ -91,7 +96,11 @@ function showUpdateBanner(latestVersion) {
 }
 
 async function checkForUpdates() {
-  if (CURRENT_VERSION === '__APP_VERSION__' || !CURRENT_VERSION) return;
+  // Locally-built DMGs leave CURRENT_VERSION as the literal placeholder.
+  // Treat those as "unversioned" — the comparator already returns true
+  // for any real tag vs the placeholder, so the banner shows and prompts
+  // the user to install a properly CI-stamped release.
+  if (!CURRENT_VERSION) return;
   try {
     const res = await fetch(RELEASES_API, {
       headers: { 'Accept': 'application/vnd.github+json' },
