@@ -174,6 +174,30 @@ class RBACManager:
         finally:
             self._put_conn(conn)
 
+    def get_user_by_email_or_name(self, identifier: str):
+        """Login lookup that accepts either an email address or a username
+        (the `name` column). Email match wins if both rows somehow exist.
+        Identifier is matched case-insensitively against both columns."""
+        if not identifier:
+            return None
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute(
+                "SELECT id, email, name, password_hash, department_id, "
+                "       is_active, is_super_admin, role "
+                "FROM users "
+                "WHERE lower(email) = lower(%s) OR lower(name) = lower(%s) "
+                "ORDER BY (lower(email) = lower(%s)) DESC "
+                "LIMIT 1",
+                (identifier, identifier, identifier),
+            )
+            row = cur.fetchone()
+            cur.close()
+            return dict(row) if row else None
+        finally:
+            self._put_conn(conn)
+
     def list_all_users(self) -> list:
         """Return all users (active and inactive) for admin views."""
         conn = self._get_conn()

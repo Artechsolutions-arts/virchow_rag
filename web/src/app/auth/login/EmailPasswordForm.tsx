@@ -73,10 +73,17 @@ export default function EmailPasswordForm({
         validateOnChange={true}
         validateOnBlur={true}
         validationSchema={Yup.object().shape({
-          email: Yup.string()
-            .email()
-            .required()
-            .transform((value) => value.toLowerCase()),
+          // For signup the field must be a real email (email is the unique
+          // account key in the users table). For login it can be either an
+          // email or a username — the backend tries both.
+          email: isSignup
+            ? Yup.string()
+                .email()
+                .required()
+                .transform((value) => value.toLowerCase())
+            : Yup.string()
+                .required()
+                .transform((value) => value.toLowerCase()),
           password: Yup.string()
             .min(
               passwordMinLength,
@@ -176,7 +183,9 @@ export default function EmailPasswordForm({
                 name="email"
                 render={(field, helper, meta, state) => (
                   <FormField name="email" state={state} className="w-full">
-                    <FormField.Label>Email Address</FormField.Label>
+                    <FormField.Label>
+                      {isSignup ? "Email Address" : "Email or Username"}
+                    </FormField.Label>
                     <FormField.Control>
                       <InputTypeIn
                         {...field}
@@ -188,7 +197,11 @@ export default function EmailPasswordForm({
                           }
                           field.onChange(e);
                         }}
-                        placeholder="email@yourcompany.com"
+                        placeholder={
+                          isSignup
+                            ? "email@yourcompany.com"
+                            : "email@yourcompany.com or username"
+                        }
                         onClear={() => helper.setValue("")}
                         data-testid="email"
                         variant={apiStatus === "error" ? "error" : undefined}

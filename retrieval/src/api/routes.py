@@ -41,7 +41,10 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # ``email`` here is a misnomer kept for backward-compat with the Next.js
+    # proxy at /api/auth/login. It can be either an email address or a
+    # username (the `users.name` column) — the lookup is permissive.
+    email: str
     password: str
 
 
@@ -67,9 +70,11 @@ def create_router(svc):
 
     @router.post("/auth/login")
     async def login(req: LoginRequest):
-        user = svc.rbac.get_user_by_email(req.email)
+        # Accept either an email or a username — the lookup tries both.
+        identifier = (req.email or "").strip()
+        user = svc.rbac.get_user_by_email_or_name(identifier)
         if not user or not verify_password(req.password, user["password_hash"]):
-            raise HTTPException(status_code=401, detail="Invalid email or password")
+            raise HTTPException(status_code=401, detail="Invalid email/username or password")
         if not user["is_active"]:
             raise HTTPException(status_code=403, detail="Account is disabled")
         svc.rbac.update_last_login(str(user["id"]))
