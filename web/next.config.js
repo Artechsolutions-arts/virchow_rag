@@ -21,6 +21,9 @@ const nextConfig = {
   eslint: { ignoreDuringBuilds: true },
   productionBrowserSourceMaps: false,
   output: "standalone",
+  // Hide the floating "N" Next.js dev tools indicator so internal users
+  // don't see framework chrome on the deployed dev-mode container.
+  devIndicators: false,
   transpilePackages: ["@virchow/opal"],
   experimental: {
     turbopack: {
