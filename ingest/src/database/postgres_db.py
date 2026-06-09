@@ -41,14 +41,18 @@ def create_schema(conn):
         access_type TEXT NOT NULL DEFAULT 'read' CHECK (access_type IN ('read','full')),
         expires_at TIMESTAMP, created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         UNIQUE (granting_dept_id, receiving_dept_id));""")
-    # T2 users
+    # T2 users — username is the unique identity (case-insensitive). Email is
+    # NOT unique: multiple users may share an email but each must have a
+    # distinct username.
     cur.execute("""CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL,
+        email TEXT NOT NULL, name TEXT NOT NULL, password_hash TEXT NOT NULL,
         department_id UUID NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
         is_active BOOLEAN NOT NULL DEFAULT TRUE,
         is_super_admin BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(), last_login TIMESTAMP);""")
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS users_name_lower_key
+                   ON users (lower(name));""")
     # deferred FKs
     for cname, table, col, ref in [
         ("fk_dept_created_by",  "departments",       "created_by", "users(id) ON DELETE SET NULL"),

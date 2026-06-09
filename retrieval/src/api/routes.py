@@ -19,9 +19,11 @@ _GENERIC_SERVER_ERROR = "An error occurred processing your request. Please try a
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    # Username is the primary identity (case-insensitive unique). Email is
+    # informational only — multiple users may share an email.
     name: str
     password: str
+    email: EmailStr | None = None
     department_id: str = None
 
     @field_validator("name")
@@ -29,7 +31,7 @@ class RegisterRequest(BaseModel):
     def name_not_empty(cls, v: str) -> str:
         v = v.strip()
         if not v:
-            raise ValueError("Name cannot be empty")
+            raise ValueError("Username cannot be empty")
         return v[:120]
 
     @field_validator("password")
@@ -56,16 +58,18 @@ def create_router(svc):
     @router.post("/auth/register")
     async def register(req: RegisterRequest):
         dept_id = req.department_id or svc.rbac.get_or_create_default_dept()
-        existing = svc.rbac.get_user_by_email(req.email)
-        if existing:
-            raise HTTPException(status_code=409, detail="Email already registered")
+        if svc.rbac.get_user_by_name(req.name):
+            raise HTTPException(status_code=409, detail="Username already taken")
+        # Email is now informational; fall back to a derived placeholder when
+        # the client doesn't supply one so the NOT NULL constraint is satisfied.
+        email_value = req.email or f"{req.name}@local"
         user_id = svc.rbac.create_user(
-            email=req.email,
+            email=email_value,
             name=req.name,
             password_hash=hash_password(req.password),
             department_id=dept_id,
         )
-        token = create_token(user_id, req.email, dept_id, role="user")
+        token = create_token(user_id, email_value, dept_id, role="user")
         return JSONResponse({"token": token, "user_id": user_id, "dept_id": dept_id, "name": req.name})
 
     @router.post("/auth/login")

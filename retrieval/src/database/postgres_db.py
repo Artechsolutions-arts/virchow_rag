@@ -56,7 +56,7 @@ def create_schema(conn):
 
     cur.execute("""CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        email TEXT NOT NULL UNIQUE,
+        email TEXT NOT NULL,
         name TEXT NOT NULL,
         password_hash TEXT NOT NULL,
         department_id UUID NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
@@ -65,6 +65,10 @@ def create_schema(conn):
         role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','hod','user')),
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         last_login TIMESTAMP);""")
+    # username is the unique identity (case-insensitive). Email is NOT unique —
+    # multiple users may share an email but each must have a distinct username.
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS users_name_lower_key
+                   ON users (lower(name));""")
 
     cur.execute("""CREATE TABLE IF NOT EXISTS chat (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -175,9 +179,11 @@ class RBACManager:
             self._put_conn(conn)
 
     def get_user_by_email_or_name(self, identifier: str):
-        """Login lookup that accepts either an email address or a username
-        (the `name` column). Email match wins if both rows somehow exist.
-        Identifier is matched case-insensitively against both columns."""
+        """Login lookup. Username is the unique identity now, so a name match
+        always wins. Email is matched as a fallback for legacy convenience —
+        but if multiple users share the same email, the first one (by
+        creation date) is returned, which is non-deterministic across writes.
+        Match is case-insensitive against both columns."""
         if not identifier:
             return None
         conn = self._get_conn()
@@ -187,10 +193,29 @@ class RBACManager:
                 "SELECT id, email, name, password_hash, department_id, "
                 "       is_active, is_super_admin, role "
                 "FROM users "
-                "WHERE lower(email) = lower(%s) OR lower(name) = lower(%s) "
-                "ORDER BY (lower(email) = lower(%s)) DESC "
+                "WHERE lower(name) = lower(%s) OR lower(email) = lower(%s) "
+                "ORDER BY (lower(name) = lower(%s)) DESC, created_at ASC "
                 "LIMIT 1",
                 (identifier, identifier, identifier),
+            )
+            row = cur.fetchone()
+            cur.close()
+            return dict(row) if row else None
+        finally:
+            self._put_conn(conn)
+
+    def get_user_by_name(self, name: str):
+        """Direct case-insensitive lookup by username (the unique identity)."""
+        if not name:
+            return None
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute(
+                "SELECT id, email, name, password_hash, department_id, "
+                "       is_active, is_super_admin, role "
+                "FROM users WHERE lower(name) = lower(%s)",
+                (name,),
             )
             row = cur.fetchone()
             cur.close()

@@ -3,22 +3,29 @@ import { INTERNAL_URL } from "@/lib/constants";
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
-  const email = body.email || "";
   const password = body.password || "";
-  const name = body.name || email.split("@")[0];
+  // Username is the primary identity. Falls back to the email local-part
+  // for backward compatibility with legacy callers that only sent email.
+  const rawEmail = (body.email || "").trim();
+  const rawName =
+    (body.name || body.username || "").trim() ||
+    (rawEmail ? rawEmail.split("@")[0] : "");
+  const email = rawEmail || undefined;
+  const name = rawName;
 
   try {
     const res = await fetch(`${INTERNAL_URL}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, name }),
+      // email is optional on the backend now; omit when blank
+      body: JSON.stringify({ name, password, ...(email ? { email } : {}) }),
     });
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       if (res.status === 409) {
         return NextResponse.json(
-          { detail: "REGISTER_USER_ALREADY_EXISTS" },
+          { detail: err.detail || "REGISTER_USERNAME_ALREADY_EXISTS" },
           { status: 400 }
         );
       }

@@ -68,22 +68,34 @@ export default function EmailPasswordForm({
       <Formik
         initialValues={{
           email: defaultEmail ? defaultEmail.toLowerCase() : "",
+          username: "",
           password: "",
         }}
         validateOnChange={true}
         validateOnBlur={true}
         validationSchema={Yup.object().shape({
-          // For signup the field must be a real email (email is the unique
-          // account key in the users table). For login it can be either an
-          // email or a username — the backend tries both.
+          // Login: identifier (email or username), backend resolves both.
+          // Signup: username is the unique account key. Email is optional and
+          // is allowed to be shared across users — multiple usernames can
+          // share the same email.
           email: isSignup
             ? Yup.string()
                 .email()
-                .required()
-                .transform((value) => value.toLowerCase())
+                .notRequired()
+                .transform((value) => (value ? value.toLowerCase() : value))
             : Yup.string()
                 .required()
                 .transform((value) => value.toLowerCase()),
+          username: isSignup
+            ? Yup.string()
+                .min(2, "Username must be at least 2 characters")
+                .max(60, "Username is too long")
+                .matches(
+                  /^[a-zA-Z0-9._-]+$/,
+                  "Letters, numbers, dot, dash, underscore only"
+                )
+                .required("Username is required")
+            : Yup.string().notRequired(),
           password: Yup.string()
             .min(
               passwordMinLength,
@@ -91,9 +103,14 @@ export default function EmailPasswordForm({
             )
             .required(),
         })}
-        onSubmit={async (values: { email: string; password: string }) => {
+        onSubmit={async (values: {
+          email: string;
+          username: string;
+          password: string;
+        }) => {
           // Ensure email is lowercase
           const email: string = values.email.toLowerCase();
+          const username: string = (values.username || "").trim();
           setShowApiMessage(true);
           setApiStatus("loading");
           setErrorMessage("");
@@ -109,7 +126,8 @@ export default function EmailPasswordForm({
               email,
               values.password,
               referralSource,
-              captchaToken
+              captchaToken,
+              username
             );
 
             if (!response.ok) {
@@ -179,12 +197,51 @@ export default function EmailPasswordForm({
         {({ isSubmitting, isValid, dirty, values }) => {
           return (
             <Form className="gap-y-3">
+              {isSignup && (
+                <FormikField<string>
+                  name="username"
+                  render={(field, helper, meta, state) => (
+                    <FormField name="username" state={state} className="w-full">
+                      <FormField.Label>Username</FormField.Label>
+                      <FormField.Control>
+                        <InputTypeIn
+                          {...field}
+                          onChange={(e) => {
+                            if (showApiMessage && apiStatus === "error") {
+                              setShowApiMessage(false);
+                              setErrorMessage("");
+                              setApiStatus("loading");
+                            }
+                            field.onChange(e);
+                          }}
+                          placeholder="your-username"
+                          onClear={() => helper.setValue("")}
+                          data-testid="username"
+                          variant={apiStatus === "error" ? "error" : undefined}
+                          showClearButton={false}
+                        />
+                      </FormField.Control>
+                      {!showApiMessage && (
+                        <FormField.Message
+                          messages={{
+                            idle:
+                              "How you'll sign in. Two people can share an email but each needs a unique username.",
+                            error: meta.error,
+                            success: "Username is available",
+                          }}
+                        />
+                      )}
+                    </FormField>
+                  )}
+                />
+              )}
+
               <FormikField<string>
                 name="email"
                 render={(field, helper, meta, state) => (
                   <FormField name="email" state={state} className="w-full">
                     <FormField.Label>
-                      {isSignup ? "Email Address" : "Email or Username"}
+                      {isSignup ? "Email Address (optional)" : "Email or Username"}
                     </FormField.Label>
                     <FormField.Control>
                       <InputTypeIn
