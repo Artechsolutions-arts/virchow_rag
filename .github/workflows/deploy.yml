@@ -41,6 +41,15 @@ jobs:
           echo "Previous: $PREV"
           echo "Current:  $(git rev-parse HEAD)"
 
+      - name: Stamp build-version file for the desktop-app auto-reload
+        working-directory: /Users/macai/Desktop/virchow_rag
+        run: |
+          # The Pake WebView polls /build-version.txt every 30s. When the SHA
+          # here changes, the desktop app silently reloads so users see the
+          # new features without closing/reopening the app.
+          git rev-parse HEAD > web/public/build-version.txt
+          echo "Stamped: $(cat web/public/build-version.txt)"
+
       - name: Classify changes (source vs dependency vs infra)
         id: changes
         working-directory: /Users/macai/Desktop/virchow_rag

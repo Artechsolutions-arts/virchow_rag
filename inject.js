@@ -117,3 +117,56 @@ async function checkForUpdates() {
 
 setTimeout(checkForUpdates, 3000);
 setInterval(checkForUpdates, CHECK_INTERVAL_MS);
+
+// ─── Live auto-reload of the web app ──────────────────────────────────────────
+// The deploy workflow writes the current git commit to /build-version.txt on
+// every push. We poll it every 30s; if it changes from the value we observed
+// at app start, we briefly show a toast and reload the WebView so the user
+// sees new features without having to quit and reopen the app.
+const BUILD_VERSION_URL = `${window.location.origin}/build-version.txt`;
+const VERSION_POLL_MS = 30 * 1000;
+let _firstSeenVersion = null;
+
+async function _fetchBuildVersion() {
+  try {
+    const res = await fetch(BUILD_VERSION_URL, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const text = (await res.text()).trim();
+    return text || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _showReloadToast() {
+  if (document.getElementById('vw-reload-toast')) return;
+  const toast = document.createElement('div');
+  toast.id = 'vw-reload-toast';
+  toast.style.cssText = [
+    'position:fixed', 'bottom:20px', 'left:50%', 'transform:translateX(-50%)',
+    'z-index:2147483647',
+    'background:#0f172a', 'color:#fff',
+    'padding:10px 16px', 'border-radius:10px',
+    'box-shadow:0 8px 24px rgba(0,0,0,0.25)',
+    'font-size:13px',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif'
+  ].join(';');
+  toast.textContent = 'New version detected — reloading...';
+  if (document.body) document.body.appendChild(toast);
+}
+
+async function pollForLiveReload() {
+  const current = await _fetchBuildVersion();
+  if (!current) return;
+  if (_firstSeenVersion === null) {
+    _firstSeenVersion = current;
+    return;
+  }
+  if (current !== _firstSeenVersion) {
+    _showReloadToast();
+    setTimeout(() => window.location.reload(), 1500);
+  }
+}
+
+setTimeout(pollForLiveReload, 5000);
+setInterval(pollForLiveReload, VERSION_POLL_MS);
