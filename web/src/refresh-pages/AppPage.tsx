@@ -24,7 +24,7 @@ import { MinimalPersonaSnapshot } from "@/app/admin/agents/interfaces";
 import { AppPopup } from "@/app/app/components/AppPopup";
 import { useUser } from "@/providers/UserProvider";
 import NoAgentModal from "@/components/modals/NoAgentModal";
-import PreviewModal from "@/sections/modals/PreviewModal";
+import PreviewSidePanel from "@/sections/preview-side-panel/PreviewSidePanel";
 import Modal from "@/refresh-components/Modal";
 import { useSendMessageToParent } from "@/lib/extension/utils";
 import { SUBMIT_MESSAGE_TYPES } from "@/lib/extension/constants";
@@ -678,12 +678,8 @@ export default function AppPage({ firstMessage }: ChatPageProps) {
         </div>
       )}
 
-      {presentingDocument && (
-        <PreviewModal
-          presentingDocument={presentingDocument}
-          onClose={() => setPresentingDocument(null)}
-        />
-      )}
+      {/* PreviewModal disabled in favor of right-side panel rendered inline
+          alongside the chat (see row-start-1 cell below). */}
 
       <FederatedOAuthModal />
 
@@ -708,7 +704,8 @@ export default function AppPage({ firstMessage }: ChatPageProps) {
                 style={gridStyle}
               >
                 {/* ── Top row: ChatUI / WelcomeMessage / ProjectUI ── */}
-                <div className="row-start-1 min-h-0 overflow-hidden flex flex-col items-center">
+                <div className="row-start-1 min-h-0 overflow-hidden flex flex-row items-stretch">
+                 <div className="flex-1 min-w-0 h-full flex flex-col items-center">
                   {/* ChatUI — mount as soon as messages exist, bypassing URL lag */}
                   {!!effectiveSessionId && !!activeAgent && (appFocus.isChat() || hasMessages) && (
                     <div className="h-full w-full flex flex-col items-center">
@@ -764,6 +761,12 @@ export default function AppPage({ firstMessage }: ChatPageProps) {
                     />
                     <Spacer rem={1.5} />
                   </Fade>
+                 </div>
+                  {/* Right-side document preview pane (Claude-Code style) */}
+                  <PreviewSidePanel
+                    presentingDocument={presentingDocument}
+                    onClose={() => setPresentingDocument(null)}
+                  />
                 </div>
 
                 {/* ── Middle-center: AppInputBar ── */}
