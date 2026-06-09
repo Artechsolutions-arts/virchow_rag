@@ -27,6 +27,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $VERSION"
+
+      - name: Inject version into inject.js
+        run: |
+          sed -i.bak "s/__APP_VERSION__/${{ steps.version.outputs.version }}/g" inject.js
+          rm inject.js.bak
+          grep "CURRENT_VERSION" inject.js
+
       - name: Build Mac universal DMG
         run: |
           npx pake-cli http://192.168.10.99:3000 \
@@ -60,6 +77,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "push") {
+            $version = "${{ github.ref_name }}"
+          } else {
+            $version = "${{ github.event.inputs.version }}"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Using version: $version"
+
+      - name: Inject version into inject.js
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          (Get-Content inject.js) -replace '__APP_VERSION__', $version | Set-Content inject.js
+          Select-String -Path inject.js -Pattern 'CURRENT_VERSION'
 
       - name: Build Windows MSI
         run: |
