@@ -1,0 +1,86 @@
+# docker-compose.dev.yml
+# =======================
+# Dev-mode override used by the auto-deploy workflow on the Mac Studio.
+#
+# Each service mounts its source directory as a bind mount and runs with
+# a hot-reload command. After a `git pull`, source changes are picked up
+# in 1–3 seconds — no `docker compose up --build` needed.
+#
+# Run with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Full rebuild (after deps change) still works the same way:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Production builds (release tags, desktop installers) should still use the
+# base file alone: `docker compose up -d` with no override.
+
+services:
+  # ── Web (Next.js) ─────────────────────────────────────────────────────────
+  # Uses the new `dev` Dockerfile stage which skips `next build`. Source is
+  # mounted on top of the image so HMR + Turbopack reload edits live.
+  web:
+    build:
+      context: ./web
+      target: dev
+    volumes:
+      - ./web/src:/app/src
+      - ./web/public:/app/public
+      - ./web/lib:/app/lib
+      - ./web/messages:/app/messages
+      - ./web/types:/app/types
+      - ./web/next.config.js:/app/next.config.js
+      - ./web/tailwind.config.js:/app/tailwind.config.js
+      - ./web/postcss.config.js:/app/postcss.config.js
+      - ./web/tsconfig.json:/app/tsconfig.json
+      - ./web/components.json:/app/components.json
+      # Persist the .next cache between container restarts so Turbopack
+      # doesn't have to re-bundle the world after every restart.
+      - virchow_web_next_cache:/app/.next
+    environment:
+      NODE_ENV: development
+    command: ["npx", "next", "dev", "--turbopack", "-p", "3000", "-H", "0.0.0.0"]
+
+  # ── Retrieval ─────────────────────────────────────────────────────────────
+  retrieval:
+    volumes:
+      - ./retrieval/src:/app/src
+      - ./retrieval/main.py:/app/main.py
+    command: >
+      uvicorn main:app --host 0.0.0.0 --port 8080
+      --reload --reload-dir /app/src --reload-dir /app
+
+  # ── Ingest API ────────────────────────────────────────────────────────────
+  ingest-api:
+    volumes:
+      - ./ingest/src:/app/src
+      - ./ingest/main.py:/app/main.py
+      - ./ingest/uploads:/app/uploads
+      - ./dots_ocr:/app/dots_ocr:ro
+      - ./weights:/app/weights:ro
+    command: >
+      sh -c "RUN_TYPE=api uvicorn main:app --host 0.0.0.0 --port 8000
+             --reload --reload-dir /app/src --reload-dir /app"
+
+  # ── Ingest Worker ─────────────────────────────────────────────────────────
+  # Worker isn't an HTTP server, so uvicorn's --reload doesn't apply. The
+  # supervisor on the host handles its own restart loop in prod; for dev we
+  # use `watchmedo` from the `watchdog` package (installed in the ingest
+  # image via the standard requirements.txt) to restart the process on .py
+  # changes. If watchmedo isn't available, falls back to the plain command —
+  # changes will pick up on the next host-side supervisor cycle.
+  ingest-worker:
+    volumes:
+      - ./ingest/src:/app/src
+      - ./ingest/main.py:/app/main.py
+      - ./ingest/uploads:/app/uploads
+      - ./dots_ocr:/app/dots_ocr:ro
+      - ./weights:/app/weights:ro
+    command: >
+      sh -c "command -v watchmedo >/dev/null
+             && watchmedo auto-restart --recursive --pattern='*.py' --directory=/app
+                python -m main
+             || python main.py"
+
+volumes:
+  virchow_web_next_cache: {}

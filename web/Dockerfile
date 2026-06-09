@@ -83,6 +83,20 @@ ENV INTERNAL_URL=${INTERNAL_URL}
 # Use NODE_OPTIONS in the build command
 RUN NODE_OPTIONS="${NODE_OPTIONS}" npx next build
 
+# Dev image: skips the production `next build` and runs `next dev` with
+# Turbopack. Source is mounted as a volume by docker-compose.dev.yml so
+# code changes hot-reload without rebuilding the image.
+FROM base AS dev
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY lib/opal/package.json ./lib/opal/
+RUN npm ci
+COPY . .
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+CMD ["npx", "next", "dev", "--turbopack", "-p", "3000", "-H", "0.0.0.0"]
+
 # Step 2. Production image, copy all the files and run next
 FROM base AS runner
 WORKDIR /app

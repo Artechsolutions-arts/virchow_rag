@@ -9,8 +9,14 @@ on:
       - 'ingest/**'
       - 'dots_ocr/**'
       - 'docker-compose.yml'
+      - 'docker-compose.dev.yml'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force a full --build (skip the source-only fast path)'
+        required: false
+        default: 'false'
 
 concurrency:
   group: deploy-mac-studio
@@ -20,6 +26,9 @@ jobs:
   deploy:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 30
+
+    env:
+      COMPOSE_FILES: "-f docker-compose.yml -f docker-compose.dev.yml"
 
     steps:
       - name: Pull latest into production directory
@@ -32,7 +41,7 @@ jobs:
           echo "Previous: $PREV"
           echo "Current:  $(git rev-parse HEAD)"
 
-      - name: Detect changed services
+      - name: Classify changes (source vs dependency vs infra)
         id: changes
         working-directory: /Users/macai/Desktop/virchow_rag
         run: |
@@ -41,44 +50,52 @@ jobs:
           echo "$CHANGED"
           echo "---"
 
-          web=false
-          retrieval=false
-          ingest=false
+          # Rebuild triggers — anything that affects the image content.
+          # Source-only changes inside the mounted dirs ride the hot-reload path.
+          deps_changed=false
+          infra_changed=false
+          source_changed=false
 
-          if echo "$CHANGED" | grep -qE "^web/"; then web=true; fi
-          if echo "$CHANGED" | grep -qE "^retrieval/"; then retrieval=true; fi
-          if echo "$CHANGED" | grep -qE "^(ingest|dots_ocr)/"; then ingest=true; fi
+          if echo "$CHANGED" | grep -qE '^web/(package(-lock)?\.json|Dockerfile|next\.config\.js|tailwind\.config\.js)$'; then deps_changed=true; fi
+          if echo "$CHANGED" | grep -qE '^retrieval/(requirements\.txt|Dockerfile)$'; then deps_changed=true; fi
+          if echo "$CHANGED" | grep -qE '^ingest/(requirements\.txt|Dockerfile|docker-entrypoint\.sh)$'; then deps_changed=true; fi
+          if echo "$CHANGED" | grep -qE '^(docker-compose\.yml|docker-compose\.dev\.yml)$'; then infra_changed=true; fi
+          if echo "$CHANGED" | grep -qE '^(web|retrieval|ingest|dots_ocr)/'; then source_changed=true; fi
 
-          # docker-compose.yml change rebuilds everything
-          if echo "$CHANGED" | grep -q "^docker-compose.yml$"; then
-            web=true; retrieval=true; ingest=true
+          # Manual override from workflow_dispatch
+          if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+            deps_changed=true
           fi
 
-          echo "web=$web" >> $GITHUB_OUTPUT
-          echo "retrieval=$retrieval" >> $GITHUB_OUTPUT
-          echo "ingest=$ingest" >> $GITHUB_OUTPUT
-          echo "Rebuild plan: web=$web retrieval=$retrieval ingest=$ingest"
+          echo "deps=$deps_changed" >> $GITHUB_OUTPUT
+          echo "infra=$infra_changed" >> $GITHUB_OUTPUT
+          echo "source=$source_changed" >> $GITHUB_OUTPUT
+          echo "Plan: deps_changed=$deps_changed  infra_changed=$infra_changed  source_changed=$source_changed"
 
-      - name: Rebuild web container
-        if: steps.changes.outputs.web == 'true'
+      # ── FAST PATH: source-only changes ─────────────────────────────────────
+      # Next.js HMR + uvicorn --reload + watchmedo pick up source changes via
+      # the bind mounts. No image rebuild, no container recreate. Returns in
+      # 2–5 seconds.
+      - name: Fast path — hot-reload via bind mount
+        if: steps.changes.outputs.source == 'true' && steps.changes.outputs.deps == 'false' && steps.changes.outputs.infra == 'false'
         working-directory: /Users/macai/Desktop/virchow_rag
-        run: docker compose up -d --build web
+        run: |
+          echo "Source-only change — relying on HMR / --reload. Verifying services are up:"
+          docker compose $COMPOSE_FILES ps
 
-      - name: Rebuild retrieval container
-        if: steps.changes.outputs.retrieval == 'true'
+      # ── REBUILD PATH: infra or dep changes ─────────────────────────────────
+      - name: Full rebuild + recreate (deps or infra change)
+        if: steps.changes.outputs.deps == 'true' || steps.changes.outputs.infra == 'true'
         working-directory: /Users/macai/Desktop/virchow_rag
-        run: docker compose up -d --build retrieval
-
-      - name: Rebuild ingest containers
-        if: steps.changes.outputs.ingest == 'true'
-        working-directory: /Users/macai/Desktop/virchow_rag
-        run: docker compose up -d --build ingest-api ingest-worker
+        run: |
+          docker compose $COMPOSE_FILES up -d --build
 
       - name: Wait for services to settle
-        if: steps.changes.outputs.web == 'true' || steps.changes.outputs.retrieval == 'true' || steps.changes.outputs.ingest == 'true'
+        if: steps.changes.outputs.deps == 'true' || steps.changes.outputs.infra == 'true'
         run: sleep 25
 
       - name: Health check
+        working-directory: /Users/macai/Desktop/virchow_rag
         run: |
           set +e
           status=0
@@ -101,7 +118,12 @@ jobs:
         run: |
           echo "### Deployment summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Web rebuilt: ${{ steps.changes.outputs.web }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Retrieval rebuilt: ${{ steps.changes.outputs.retrieval }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Ingest rebuilt: ${{ steps.changes.outputs.ingest }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.changes.outputs.deps }}" = "true" ] || [ "${{ steps.changes.outputs.infra }}" = "true" ]; then
+            echo "- Path: **full rebuild**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Path: **fast (HMR / --reload, no rebuild)**" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- Deps changed: ${{ steps.changes.outputs.deps }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Infra changed: ${{ steps.changes.outputs.infra }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Source changed: ${{ steps.changes.outputs.source }}" >> $GITHUB_STEP_SUMMARY
           echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
