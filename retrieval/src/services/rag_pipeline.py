@@ -24,6 +24,30 @@ _FILE_EXT_RE = re.compile(r'\.(pdf|xlsx?|docx?|csv|txt)$', re.IGNORECASE)
 # Matches bare filenames with extensions (e.g. "report.pdf", "FEB-U2-DN.pdf")
 _FILENAME_RE = re.compile(r'\S+\.(?:pdf|xlsx?|docx?|csv|txt)', re.IGNORECASE)
 
+
+def _compose_answer_with_sources(answer: str, citations: list) -> str:
+    """Append a markdown 'Sources:' block with proxy URLs to the answer so it
+    survives DB persistence. The frontend renderer detects /api/chat/file/
+    links and opens the in-app PDF preview modal instead of navigating away.
+    Skips if the answer already contains a 'Sources:' block (idempotent) or
+    if there are no citations."""
+    from urllib.parse import quote
+    if not citations:
+        return answer
+    if re.search(r'(?im)^\s*Sources:\s*$', answer):
+        return answer
+    seen = set()
+    lines = []
+    for c in citations:
+        name = (c or {}).get("name") or ""
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        lines.append(f"- [{name}](/api/chat/file/{quote(name)})")
+    if not lines:
+        return answer
+    return f"{answer.rstrip()}\n\nSources:\n" + "\n".join(lines)
+
 # Short conversational inputs that don't need RAG
 _CONVERSATIONAL_RE = re.compile(
     r'^\s*(hello|hi+|hey|thanks|thank\s+you|ok(ay)?|sure|bye|goodbye|'
@@ -372,9 +396,10 @@ class RetrievalService:
                 if not chat_id:
                     chat_id = self.rbac.create_chat(user_id, dept_id, title=question[:60])
                 self.rbac.update_chat_title_if_empty(chat_id, question[:60])
+                persisted_answer = _compose_answer_with_sources(answer, citations)
                 self.rbac.add_message(chat_id, "user", question)
-                self.rbac.add_message(chat_id, "assistant", answer)
-                return {"answer": answer, "citations": citations, "chat_id": chat_id}
+                self.rbac.add_message(chat_id, "assistant", persisted_answer)
+                return {"answer": persisted_answer, "citations": citations, "chat_id": chat_id}
             logger.info("Analytical SQL returned no rows — falling back to vector search")
 
         # 4b. Embed the question
@@ -540,15 +565,16 @@ class RetrievalService:
         if not chat_id:
             chat_id = self.rbac.create_chat(user_id, dept_id, title=question[:60])
         self.rbac.update_chat_title_if_empty(chat_id, question[:60])
+        persisted_answer = _compose_answer_with_sources(answer, citations)
         self.rbac.add_message(chat_id, "user", question)
-        self.rbac.add_message(chat_id, "assistant", answer)
+        self.rbac.add_message(chat_id, "assistant", persisted_answer)
         self.rbac.log_retrieval(
             chat_id, user_id, dept_id, question,
             [str(r["chunk_id"]) for r in results],
             [float(r["similarity"]) for r in results],
         )
 
-        return {"answer": answer, "citations": citations, "chat_id": chat_id}
+        return {"answer": persisted_answer, "citations": citations, "chat_id": chat_id}
 
     def get_chat_messages(self, chat_id: str, dept_id: str) -> list:
         return self.rbac.get_messages(chat_id, dept_id)

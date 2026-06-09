@@ -691,27 +691,12 @@ export default function useChatController({
           }
 
           const data = (await response.json()) as MdChunksAskResponse;
-          const sources = Array.isArray(data.sources) ? data.sources : [];
-          const sourcesBlock =
-            sources.length > 0
-              ? `\n\nSources:\n${sources
-                  .map((source) => {
-                    // Convert direct SeaweedFS URLs (http://host:port/.../raw/file)
-                    // to the Next.js proxy so links work in the desktop app (Pake/Tauri)
-                    // without needing OS-level shell.open for private IPs.
-                    let href = source.url || `/md-chunks-source/${encodeURIComponent(source.doc_id)}`;
-                    try {
-                      const u = new URL(href);
-                      const rawIdx = u.pathname.indexOf("/raw/");
-                      if (rawIdx !== -1) {
-                        href = `/api/chat/file/${u.pathname.slice(rawIdx + 5)}`;
-                      }
-                    } catch (_) {}
-                    return `- [${source.source_file}](${href})`;
-                  })
-                  .join("\n")}`
-              : "";
-          const mdChunksAnswer = `${data.answer || "No answer returned."}${sourcesBlock}`;
+          // The retrieval service now bakes the "Sources:" markdown block into
+          // the persisted answer text itself (see _compose_answer_with_sources
+          // in retrieval/src/services/rag_pipeline.py), so live rendering and
+          // post-refresh rendering show the same content. We no longer build
+          // a sources block here.
+          const mdChunksAnswer = data.answer || "No answer returned.";
 
           console.log("[chat] got answer, streaming simulation, session=", frozenSessionId, "answer len=", mdChunksAnswer.length);
 
