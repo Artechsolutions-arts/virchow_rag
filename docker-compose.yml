@@ -67,6 +67,7 @@ services:
       DOTS_OCR_PROMPT_MODE: prompt_layout_all_en
       LOG_LEVEL: INFO
       UPLOAD_WORKERS: "2"
+      SKIP_SYSTEM_USER_INIT: "true"
     volumes:
       - ./ingest/uploads:/app/uploads
       - ./dots_ocr:/app/dots_ocr:ro
@@ -128,6 +129,7 @@ services:
       N_SEQ_WORKERS: "2"
       LOG_LEVEL: INFO
       UPLOAD_WORKERS: "2"
+      SKIP_SYSTEM_USER_INIT: "true"
       HF_HOME: /tmp/hf_cache
       TRANSFORMERS_CACHE: /tmp/hf_cache
     volumes:

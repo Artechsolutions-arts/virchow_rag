@@ -176,6 +176,7 @@ def start_worker():
     env = os.environ.copy()
     env["RUN_TYPE"]      = "worker"
     env["PIPELINE_MODE"] = "sequential"
+    env["SKIP_SYSTEM_USER_INIT"] = "true"
     try:
         log_fh = open(WORKER_LOG, "a")
         proc   = subprocess.Popen(

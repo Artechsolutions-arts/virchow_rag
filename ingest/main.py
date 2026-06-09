@@ -49,9 +49,11 @@ _ids      = {}
 
 def _init_system_defaults(rbac: RBACManager) -> dict:
     """
-    Ensure a System department and System user exist.
-    These are used as the default scope for uploads that don't specify dept_id/user_id.
-    Returns {"dept_default": <uuid>, "user_default": <uuid>}.
+    Ensure a System department exists. Also create a System user unless
+    SKIP_SYSTEM_USER_INIT=true is set in the environment — when set, uploads
+    without an authenticated user_id will fail with an FK violation, which is
+    the intent for deployments that enforce per-user attribution.
+    Returns {"dept_default": <uuid>, "user_default": <uuid or None>}.
     """
     ids = {}
 
@@ -65,20 +67,24 @@ def _init_system_defaults(rbac: RBACManager) -> dict:
         dept_id = str(row[0]) if row else None
     ids["dept_default"] = dept_id
 
-    # System user
-    system_email = "system@internal.rag"
-    try:
-        user_id = rbac.create_user(
-            system_email, "System", "no_hash_required", dept_id, is_super_admin=True
-        )
-    except Exception:
-        cur = rbac.conn.cursor()
-        cur.execute("SELECT id FROM users WHERE email=%s", (system_email,))
-        row = cur.fetchone()
-        user_id = str(row[0]) if row else None
-    ids["user_default"] = user_id
+    # System user (skippable)
+    if os.getenv("SKIP_SYSTEM_USER_INIT", "false").lower() in ("true", "1", "yes"):
+        logger.info("SKIP_SYSTEM_USER_INIT=true — not creating system user")
+        ids["user_default"] = None
+    else:
+        system_email = "system@internal.rag"
+        try:
+            user_id = rbac.create_user(
+                system_email, "System", "no_hash_required", dept_id, is_super_admin=True
+            )
+        except Exception:
+            cur = rbac.conn.cursor()
+            cur.execute("SELECT id FROM users WHERE email=%s", (system_email,))
+            row = cur.fetchone()
+            user_id = str(row[0]) if row else None
+        ids["user_default"] = user_id
 
-    logger.info("System defaults — dept=%s user=%s", dept_id, user_id)
+    logger.info("System defaults — dept=%s user=%s", dept_id, ids.get("user_default"))
     return ids
 
 
