@@ -1,0 +1,107 @@
+name: Auto-deploy to Mac Studio
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'retrieval/**'
+      - 'ingest/**'
+      - 'dots_ocr/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-mac-studio
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 30
+
+    steps:
+      - name: Pull latest into production directory
+        working-directory: /Users/macai/Desktop/virchow_rag
+        run: |
+          PREV=$(git rev-parse HEAD)
+          git fetch origin main
+          git reset --hard origin/main
+          echo "PREV_SHA=$PREV" >> $GITHUB_ENV
+          echo "Previous: $PREV"
+          echo "Current:  $(git rev-parse HEAD)"
+
+      - name: Detect changed services
+        id: changes
+        working-directory: /Users/macai/Desktop/virchow_rag
+        run: |
+          CHANGED=$(git diff --name-only $PREV_SHA HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo "---"
+
+          web=false
+          retrieval=false
+          ingest=false
+
+          if echo "$CHANGED" | grep -qE "^web/"; then web=true; fi
+          if echo "$CHANGED" | grep -qE "^retrieval/"; then retrieval=true; fi
+          if echo "$CHANGED" | grep -qE "^(ingest|dots_ocr)/"; then ingest=true; fi
+
+          # docker-compose.yml change rebuilds everything
+          if echo "$CHANGED" | grep -q "^docker-compose.yml$"; then
+            web=true; retrieval=true; ingest=true
+          fi
+
+          echo "web=$web" >> $GITHUB_OUTPUT
+          echo "retrieval=$retrieval" >> $GITHUB_OUTPUT
+          echo "ingest=$ingest" >> $GITHUB_OUTPUT
+          echo "Rebuild plan: web=$web retrieval=$retrieval ingest=$ingest"
+
+      - name: Rebuild web container
+        if: steps.changes.outputs.web == 'true'
+        working-directory: /Users/macai/Desktop/virchow_rag
+        run: docker compose up -d --build web
+
+      - name: Rebuild retrieval container
+        if: steps.changes.outputs.retrieval == 'true'
+        working-directory: /Users/macai/Desktop/virchow_rag
+        run: docker compose up -d --build retrieval
+
+      - name: Rebuild ingest containers
+        if: steps.changes.outputs.ingest == 'true'
+        working-directory: /Users/macai/Desktop/virchow_rag
+        run: docker compose up -d --build ingest-api ingest-worker
+
+      - name: Wait for services to settle
+        if: steps.changes.outputs.web == 'true' || steps.changes.outputs.retrieval == 'true' || steps.changes.outputs.ingest == 'true'
+        run: sleep 25
+
+      - name: Health check
+        run: |
+          set +e
+          status=0
+          check() {
+            local name=$1; local url=$2
+            if curl -fs --max-time 10 "$url" > /dev/null; then
+              echo "ok   $name"
+            else
+              echo "FAIL $name ($url)"
+              status=1
+            fi
+          }
+          check "web      " "http://localhost:3000"
+          check "retrieval" "http://localhost:8080/health"
+          check "ingest   " "http://localhost:8000/health"
+          exit $status
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "### Deployment summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Web rebuilt: ${{ steps.changes.outputs.web }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Retrieval rebuilt: ${{ steps.changes.outputs.retrieval }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Ingest rebuilt: ${{ steps.changes.outputs.ingest }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

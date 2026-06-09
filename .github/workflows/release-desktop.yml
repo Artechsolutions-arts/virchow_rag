@@ -1,0 +1,120 @@
+name: Build & Release Virchows Wiki Desktop
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.1) — used only for the release name'
+        required: false
+        default: 'manual'
+
+jobs:
+  build-mac:
+    name: Build Mac (universal DMG)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Mac universal DMG
+        run: |
+          npx pake-cli http://192.168.10.99:3000 \
+            --name "Virchows Wiki" \
+            --width 1440 \
+            --height 900 \
+            --hide-title-bar \
+            --enable-find \
+            --inject ./inject.js \
+            --icon ./virchow_icon.png \
+            --multi-arch \
+            --activation-shortcut "CmdOrControl+Shift+V"
+
+      - name: Upload Mac artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Virchows-Wiki-Mac
+          path: 'Virchows Wiki*.dmg'
+          retention-days: 30
+
+  build-windows:
+    name: Build Windows (MSI)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows MSI
+        run: |
+          npx pake-cli http://192.168.10.99:3000 `
+            --name "Virchows Wiki" `
+            --width 1440 `
+            --height 900 `
+            --icon virchow_icon.png `
+            --enable-find `
+            --inject inject.js `
+            --activation-shortcut "CmdOrControl+Shift+V"
+        shell: pwsh
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Virchows-Wiki-Windows
+          path: |
+            Virchows Wiki*.msi
+            Virchows Wiki*.exe
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Mac artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Virchows-Wiki-Mac
+          path: ./mac
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Virchows-Wiki-Windows
+          path: ./windows
+
+      - name: List files
+        run: |
+          echo "Mac artifacts:"
+          ls -la ./mac
+          echo "Windows artifacts:"
+          ls -la ./windows
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Virchows Wiki ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            ./mac/*
+            ./windows/*
