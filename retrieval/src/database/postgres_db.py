@@ -500,6 +500,50 @@ class RBACManager:
         finally:
             self._put_conn(conn)
 
+    # ── ColPali visual page search (fallback path) ────────────────────────────
+
+    @staticmethod
+    def _vec_str(vec) -> str:
+        """Format a Python list of floats as pgvector literal: '[1.0,2.0,...]'."""
+        return "[" + ",".join(f"{float(x):.6f}" for x in vec) + "]"
+
+    def search_colpali_pages(self, query_vec, dept_id: str, top_k: int = 4):
+        """ANN search over colpali_page_embeddings. Respects RBAC via
+        dept_access_grants. Returns up to top_k rows of
+        (document_id, file_name, page_num, similarity) sorted by best match."""
+        if not query_vec:
+            return []
+        vec_str = self._vec_str(query_vec)
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            # Same RBAC clause shape as the text retrieval — the user can
+            # search pages from their own dept plus any dept that granted
+            # them read access.
+            sql = """
+            SELECT
+              c.document_id::TEXT AS document_id,
+              d.file_name AS file_name,
+              c.page_num AS page_num,
+              (1.0 - (c.embedding <=> %s::vector))::float AS similarity
+            FROM colpali_page_embeddings c
+            JOIN documents d ON d.id = c.document_id
+            WHERE
+              (c.department_id = %s
+                 OR c.department_id IN (
+                       SELECT granting_dept_id FROM dept_access_grants
+                       WHERE receiving_dept_id = %s
+                         AND (expires_at IS NULL OR expires_at > NOW())))
+            ORDER BY c.embedding <=> %s::vector
+            LIMIT %s
+            """
+            cur.execute(sql, (vec_str, dept_id, dept_id, vec_str, int(top_k)))
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+            return rows
+        finally:
+            self._put_conn(conn)
+
     # ── App settings (small runtime-tunable key/value store) ──────────────────
 
     def get_setting(self, key: str) -> str | None:

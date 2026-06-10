@@ -219,8 +219,12 @@ class RetrievalService:
         logger.info("RetrievalService ready.")
 
     def _get_colpali(self) -> "_ColPaliEmbedder | None":
-        """Lazy-load the ColPali query encoder on first visual search."""
-        if not cfg.enable_colpali:
+        """Lazy-load the ColPali query encoder on first visual search.
+
+        Loads when EITHER `enable_colpali` (the full pipeline flag) or
+        `enable_colpali_fallback` (the slow-path-only flag) is true.
+        """
+        if not (cfg.enable_colpali or cfg.enable_colpali_fallback):
             return None
         if self._colpali is not None:
             return self._colpali
@@ -231,6 +235,179 @@ class RetrievalService:
         except Exception as e:
             logger.warning("ColPali encoder unavailable: %s", e)
         return self._colpali
+
+    # ── Visual fallback: ColPali pages → VL model ─────────────────────────────
+
+    def _fetch_pdf_bytes(self, file_name: str) -> "bytes | None":
+        """Pull raw PDF bytes from SeaweedFS so we can render pages on demand."""
+        import requests as _requests
+        from urllib.parse import quote
+        url = f"{cfg.seaweedfs_filer_url.rstrip('/')}/buckets/{cfg.seaweedfs_bucket}/raw/{quote(file_name)}"
+        try:
+            r = _requests.get(url, timeout=20)
+            if r.status_code == 200:
+                return r.content
+            logger.warning("SeaweedFS GET %s returned HTTP %s", file_name, r.status_code)
+        except Exception as e:
+            logger.warning("SeaweedFS GET %s failed: %s", file_name, e)
+        return None
+
+    def _render_pdf_page_png_b64(self, pdf_bytes: bytes, page_num: int) -> "str | None":
+        """Render a 1-indexed page of a PDF to a base64-encoded PNG."""
+        import base64
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            logger.error("PyMuPDF (fitz) not installed; visual fallback cannot render pages")
+            return None
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                idx = max(0, min(int(page_num) - 1, doc.page_count - 1))
+                page = doc.load_page(idx)
+                pix = page.get_pixmap(dpi=cfg.colpali_fallback_page_dpi, alpha=False)
+                return base64.b64encode(pix.tobytes("png")).decode("ascii")
+        except Exception as e:
+            logger.warning("Page render failed (page=%s): %s", page_num, e)
+            return None
+
+    def _colpali_visual_fallback(self, question: str, dept_id: str) -> "dict | None":
+        """Last-resort visual answer when text RAG turned up nothing.
+
+        Pipeline: ColPali query encode → ANN on colpali_page_embeddings →
+        render top-K pages from SeaweedFS → send images + question to a
+        vision-language model on Ollama → return {answer, citations}.
+        Returns None if anything in the chain is unavailable.
+        """
+        if not cfg.enable_colpali_fallback:
+            return None
+        encoder = self._get_colpali()
+        if encoder is None:
+            logger.info("[visual-fallback] ColPali encoder unavailable, skipping")
+            return None
+
+        try:
+            query_vec = encoder.embed_query(question)
+        except Exception as e:
+            logger.warning("[visual-fallback] query encode failed: %s", e)
+            return None
+        if not query_vec or all(v == 0.0 for v in query_vec):
+            logger.info("[visual-fallback] empty query vector, skipping")
+            return None
+
+        pages = self.rbac.search_colpali_pages(
+            query_vec, dept_id, top_k=cfg.colpali_fallback_top_k
+        )
+        if not pages:
+            logger.info("[visual-fallback] no candidate pages, skipping")
+            return None
+        logger.info(
+            "[visual-fallback] %d candidate pages: %s",
+            len(pages),
+            [(p["file_name"], p["page_num"], round(p["similarity"], 3)) for p in pages],
+        )
+
+        # Render each candidate page once; dedup PDFs across pages so we
+        # don't pay the SeaweedFS GET twice for the same file.
+        images_b64 = []
+        page_refs = []   # (file_name, page_num) in image order
+        pdf_cache: dict = {}
+        for p in pages:
+            fname = p["file_name"]
+            pnum = int(p["page_num"])
+            pdf_bytes = pdf_cache.get(fname)
+            if pdf_bytes is None:
+                pdf_bytes = self._fetch_pdf_bytes(fname)
+                if pdf_bytes is None:
+                    continue
+                pdf_cache[fname] = pdf_bytes
+            b64 = self._render_pdf_page_png_b64(pdf_bytes, pnum)
+            if not b64:
+                continue
+            images_b64.append(b64)
+            page_refs.append((fname, pnum))
+
+        if not images_b64:
+            logger.info("[visual-fallback] no pages could be rendered, skipping")
+            return None
+
+        # Build the VL prompt and call the configured VL model directly —
+        # we bypass the text LLM client because the system prompts there
+        # assume chunk-style context, not images.
+        import httpx
+        system_text = (
+            "You are Virchow, an enterprise document analyst. You will be shown "
+            "one or more page images from documents that may contain the answer "
+            "to the user's question. Read the pages, then give a concise, direct "
+            "answer in 1–4 sentences. Cite the document filename(s) you used. "
+            "If the pages don't actually contain the answer, say so plainly."
+        )
+        user_text = (
+            f"Question: {question}\n\n"
+            f"You are looking at these pages (in order):\n"
+            + "\n".join(
+                f"  Image {i+1}: {fname} (page {pnum})"
+                for i, (fname, pnum) in enumerate(page_refs)
+            )
+        )
+
+        vl_model = cfg.colpali_fallback_vl_model
+        payload = {
+            "model": vl_model,
+            "messages": [
+                {"role": "system", "content": system_text},
+                {
+                    "role": "user",
+                    "content": user_text,
+                    "images": images_b64,
+                },
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": 4096,
+                "top_p": 1.0,
+            },
+        }
+        try:
+            resp = httpx.post(
+                f"{cfg.llm_url}/api/chat", json=payload, timeout=240.0
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning("[visual-fallback] Ollama call failed: %s", e)
+            return None
+
+        msg = data.get("message") or {}
+        raw = (msg.get("content") or "")
+        # Reuse the text-side reasoning stripper for <think>…</think>
+        from src.retrieval.llm_client import _strip_thinking
+        text = _strip_thinking(raw).strip()
+        if not text:
+            text = _strip_thinking(msg.get("thinking") or "").strip()
+        if not text:
+            logger.warning(
+                "[visual-fallback] VL model returned empty; eval_count=%s done_reason=%s",
+                data.get("eval_count"), data.get("done_reason"),
+            )
+            return None
+
+        # Citations: unique filenames in the order they were shown to the model.
+        seen = set()
+        citations = []
+        for fname, _pnum in page_refs:
+            if fname in seen:
+                continue
+            seen.add(fname)
+            citations.append({
+                "name": fname,
+                "document_id": "",
+                "url": self._get_seaweedfs_url(fname),
+            })
+
+        # Mark the answer so users can tell it came from visual fallback.
+        prefixed = "_(Visual fallback — read directly from page images.)_\n\n" + text
+        return {"answer": prefixed, "citations": citations}
 
     def _get_seaweedfs_url(self, file_name: str) -> str:
         # Files ingested via the ingest service are uploaded through the S3 API
@@ -550,6 +727,25 @@ class RetrievalService:
         results = results[:max_chunks]
 
         if not results:
+            # Before giving up, try the ColPali → VL visual fallback. Some
+            # pages were never chunked properly (OCR treated them as images)
+            # but ColPali still has a visual embedding for them.
+            visual = self._colpali_visual_fallback(question, dept_id)
+            if visual is not None:
+                if not chat_id:
+                    chat_id = self.rbac.create_chat(user_id, dept_id, title=question[:60])
+                self.rbac.update_chat_title_if_empty(chat_id, question[:60])
+                persisted = _compose_answer_with_sources(
+                    visual["answer"], visual["citations"]
+                )
+                self.rbac.add_message(chat_id, "user", question)
+                self.rbac.add_message(chat_id, "assistant", persisted)
+                return {
+                    "answer": persisted,
+                    "citations": visual["citations"],
+                    "chat_id": chat_id,
+                }
+
             if months_filter:
                 available = self.rbac.get_available_months(dept_id)
                 if available:
@@ -573,6 +769,36 @@ class RetrievalService:
         # 10. Call LLM — pass intent and conversation history
         recent_history = history[-_HISTORY_WINDOW:] if history else []
         answer, relevant_files = call_llm(question, results, history=recent_history, intent=intent)
+
+        # 10b. Visual fallback when the text LLM had chunks but said it
+        # couldn't find the info — usually means the chunks the model saw
+        # were noisy (image-only pages OCR'd as gibberish, scanned tables,
+        # etc.) and ColPali might do better on the original page images.
+        _not_found_hints = ("no relevant", "couldn't find", "could not find",
+                            "no information", "not found", "do not contain",
+                            "don't contain", "not specified")
+        ans_lower = (answer or "").lower()
+        if (not relevant_files) or any(h in ans_lower for h in _not_found_hints):
+            visual = self._colpali_visual_fallback(question, dept_id)
+            if visual is not None:
+                if not chat_id:
+                    chat_id = self.rbac.create_chat(user_id, dept_id, title=question[:60])
+                self.rbac.update_chat_title_if_empty(chat_id, question[:60])
+                persisted = _compose_answer_with_sources(
+                    visual["answer"], visual["citations"]
+                )
+                self.rbac.add_message(chat_id, "user", question)
+                self.rbac.add_message(chat_id, "assistant", persisted)
+                self.rbac.log_retrieval(
+                    chat_id, user_id, dept_id, question,
+                    [str(r["chunk_id"]) for r in results],
+                    [float(r["similarity"]) for r in results],
+                )
+                return {
+                    "answer": persisted,
+                    "citations": visual["citations"],
+                    "chat_id": chat_id,
+                }
 
         # 11. Build citations — only files the LLM found relevant
         citations = []

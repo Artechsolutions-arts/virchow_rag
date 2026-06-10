@@ -40,6 +40,16 @@ class RAGConfig:
         self.jwt_expire_hours     = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
         # ColPali visual search — disable when not needed to avoid 3B model CPU load blocking queries
         self.enable_colpali       = os.getenv("ENABLE_COLPALI", "false").lower() == "true"
+        # When the text-RAG path returns "no relevant info" or empty results,
+        # fall back to ColPali → render top pages → vision-language LLM (e.g.
+        # qwen3-vl:8b). Useful when OCR mis-handled pages that ColPali still
+        # captured as images. The fallback itself is allowed even when
+        # ENABLE_COLPALI=false because the query-time encoder load is cheap
+        # and only happens on the slow path.
+        self.enable_colpali_fallback = os.getenv("ENABLE_COLPALI_FALLBACK", "true").lower() == "true"
+        self.colpali_fallback_top_k  = int(os.getenv("COLPALI_FALLBACK_TOP_K", "4"))
+        self.colpali_fallback_vl_model = os.getenv("COLPALI_FALLBACK_VL_MODEL", "qwen3-vl:8b")
+        self.colpali_fallback_page_dpi = int(os.getenv("COLPALI_FALLBACK_PAGE_DPI", "144"))
         # SeaweedFS
         self.seaweedfs_filer_url  = os.getenv("SEAWEEDFS_FILER_URL", "http://192.168.10.10:889")
         self.seaweedfs_bucket     = os.getenv("SEAWEEDFS_BUCKET", "rag-docs")
