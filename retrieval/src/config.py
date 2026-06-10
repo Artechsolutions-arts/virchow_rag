@@ -41,12 +41,17 @@ class RAGConfig:
         # ColPali visual search — disable when not needed to avoid 3B model CPU load blocking queries
         self.enable_colpali       = os.getenv("ENABLE_COLPALI", "false").lower() == "true"
         # When the text-RAG path returns "no relevant info" or empty results,
-        # fall back to ColPali → render top pages → vision-language LLM (e.g.
-        # qwen3-vl:8b). Useful when OCR mis-handled pages that ColPali still
-        # captured as images. The fallback itself is allowed even when
-        # ENABLE_COLPALI=false because the query-time encoder load is cheap
-        # and only happens on the slow path.
-        self.enable_colpali_fallback = os.getenv("ENABLE_COLPALI_FALLBACK", "true").lower() == "true"
+        # fall back to ColPali → render top pages → vision-language LLM
+        # (e.g. qwen3-vl:8b). Useful when OCR mis-handled pages that ColPali
+        # still captured as images.
+        #
+        # OFF by default until the model load is moved off the request path:
+        # ColPali v1.2 is a 3B-param model and `ColPali.from_pretrained` on
+        # CPU stalls the Python event loop for several minutes the first
+        # time it's called, which makes /auth/type and every other endpoint
+        # time out (the Next.js SSR layer then renders "fetch failed").
+        # Once we pre-warm in a startup thread, this default flips to True.
+        self.enable_colpali_fallback = os.getenv("ENABLE_COLPALI_FALLBACK", "false").lower() == "true"
         self.colpali_fallback_top_k  = int(os.getenv("COLPALI_FALLBACK_TOP_K", "4"))
         self.colpali_fallback_vl_model = os.getenv("COLPALI_FALLBACK_VL_MODEL", "qwen3-vl:8b")
         self.colpali_fallback_page_dpi = int(os.getenv("COLPALI_FALLBACK_PAGE_DPI", "144"))
