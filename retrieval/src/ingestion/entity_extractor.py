@@ -113,7 +113,7 @@ def _call_llm(prompt: str) -> Optional[str]:
         response = httpx.post(
             f"{cfg.llm_url}/api/generate",
             json={
-                "model": cfg.llm_model,
+                "model": cfg.effective_llm_model(),
                 "prompt": prompt,
                 "stream": False,
                 "options": {"temperature": 0.0, "num_predict": 512},

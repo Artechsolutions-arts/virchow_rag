@@ -70,6 +70,14 @@ def create_schema(conn):
     cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS users_name_lower_key
                    ON users (lower(name));""")
 
+    # Small runtime-tunable settings (e.g. selected LLM model). Avoids needing
+    # a redeploy + env-var change for things admins should tweak from the UI.
+    cur.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_by UUID REFERENCES users(id) ON DELETE SET NULL);""")
+
     cur.execute("""CREATE TABLE IF NOT EXISTS chat (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -489,6 +497,36 @@ class RBACManager:
             removed = cur.rowcount > 0
             cur.close()
             return removed
+        finally:
+            self._put_conn(conn)
+
+    # ── App settings (small runtime-tunable key/value store) ──────────────────
+
+    def get_setting(self, key: str) -> str | None:
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+            cur.close()
+            return row["value"] if row else None
+        finally:
+            self._put_conn(conn)
+
+    def set_setting(self, key: str, value: str, updated_by: str = None):
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute(
+                "INSERT INTO app_settings (key, value, updated_by) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (key) DO UPDATE "
+                "  SET value = EXCLUDED.value, "
+                "      updated_at = NOW(), "
+                "      updated_by = EXCLUDED.updated_by",
+                (key, value, updated_by),
+            )
+            cur.close()
         finally:
             self._put_conn(conn)
 

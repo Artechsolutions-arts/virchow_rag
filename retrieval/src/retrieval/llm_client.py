@@ -447,7 +447,7 @@ def _call_ollama(prompt: str, num_predict: int) -> str:
         response = httpx.post(
             f"{cfg.llm_url}/api/generate",
             json={
-                "model": cfg.llm_model,
+                "model": cfg.effective_llm_model(),
                 "prompt": prompt,
                 "stream": False,
                 "options": {

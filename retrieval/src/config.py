@@ -61,5 +61,29 @@ class RAGConfig:
                 "Set the JWT_SECRET environment variable before going to production."
             )
 
+        # ── Runtime model selection ─────────────────────────────────────────────
+        # Admins can override `llm_model` via the /admin/configuration/llm page,
+        # which writes to the app_settings table. We read it through a tiny
+        # 15-second cache so per-request DB lookups stay cheap.
+        self._llm_model_cache = (0.0, None)
+
+    def effective_llm_model(self) -> str:
+        """LLM model to use right now: DB override (if set) else env-configured."""
+        import time
+        ts, cached = self._llm_model_cache
+        if cached and (time.time() - ts) < 15.0:
+            return cached
+        override = None
+        try:
+            from src.database.postgres_db import get_pg_pool, RBACManager
+            pool = get_pg_pool(minconn=1, maxconn=2)
+            rbac = RBACManager(pool)
+            override = rbac.get_setting("llm_model")
+        except Exception:
+            override = None
+        chosen = (override or self.llm_model).strip() or self.llm_model
+        self._llm_model_cache = (time.time(), chosen)
+        return chosen
+
 
 cfg = RAGConfig()

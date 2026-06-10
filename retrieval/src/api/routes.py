@@ -8,7 +8,7 @@ from src.auth.jwt_auth import (
     require_admin,
     hash_password, verify_password, create_token, get_current_user, decode_token
 )
-from src.config import MAX_QUESTION_LENGTH
+from src.config import MAX_QUESTION_LENGTH, cfg
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 _SAFE_FILENAME_RE = re.compile(r'^[A-Za-z0-9 _\-\.]{1,200}\.pdf$', re.IGNORECASE)
@@ -137,6 +137,72 @@ def create_router(svc):
         if not removed:
             raise HTTPException(status_code=404, detail="Grant not found")
         return JSONResponse({"ok": True})
+
+    # ── Models (admin) ───────────────────────────────────────────────────────
+    # Show what's running right now and let admins change the LLM model
+    # without redeploying. Embedding model is shown read-only — changing it
+    # would invalidate every existing vector and require a re-index.
+
+    @router.get("/admin/models")
+    async def get_models(user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        import httpx
+        available = []
+        ollama_error = None
+        try:
+            r = httpx.get(f"{cfg.llm_url}/api/tags", timeout=8.0)
+            if r.status_code == 200:
+                data = r.json()
+                for m in data.get("models", []) or []:
+                    if isinstance(m, dict) and m.get("name"):
+                        available.append({
+                            "name": m["name"],
+                            "size": m.get("size"),
+                            "modified_at": m.get("modified_at"),
+                        })
+            else:
+                ollama_error = f"Ollama returned HTTP {r.status_code}"
+        except Exception as e:
+            ollama_error = str(e)
+
+        return JSONResponse({
+            "llm_model": cfg.effective_llm_model(),
+            "llm_model_env_default": cfg.llm_model,
+            "embedding_model": cfg.ollama_embed_model,
+            "embedding_dim": cfg.embedding_dim,
+            "ollama_url": cfg.llm_url,
+            "available_models": sorted(available, key=lambda m: m["name"]),
+            "ollama_error": ollama_error,
+        })
+
+    @router.post("/admin/models/llm")
+    async def set_llm_model(req: Request, user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        body = await req.json()
+        name = (body.get("model") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="model is required")
+        # Sanity-check: the chosen model should be installed in Ollama.
+        import httpx
+        try:
+            r = httpx.get(f"{cfg.llm_url}/api/tags", timeout=8.0)
+            tags = {m["name"] for m in (r.json().get("models") or [])
+                    if isinstance(m, dict) and m.get("name")}
+            if tags and name not in tags:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{name}' is not installed in Ollama. "
+                           f"Run `ollama pull {name}` on the host first."
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # Ollama unreachable — accept the change anyway so admins can
+            # pre-configure before pulling. We log instead of blocking.
+            logger.warning("Could not verify model '%s' with Ollama", name)
+        svc.rbac.set_setting("llm_model", name, updated_by=user["sub"])
+        cfg._llm_model_cache = (0.0, None)  # invalidate cache
+        return JSONResponse({"llm_model": name})
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
