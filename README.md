@@ -233,6 +233,33 @@ ollama pull qwen3-vl:8b
 ollama pull gemma4:31b
 ```
 
+#### Visual fallback (ColPali → vision-language LLM)
+
+When text RAG returns *"no relevant information"* — usually because OCR garbled or skipped a page that ColPali captured visually — the pipeline silently falls back to a second path:
+
+1. **ColPali query encoder** (`vidore/colpali-v1.2`, PaliGemma 3B + LoRA) → 128-dim query vector.
+2. **ANN search** on `colpali_page_embeddings` (80,976 rows already indexed via HNSW cosine) → top-4 `(document, page)` candidates.
+3. **Render** each page from its PDF in SeaweedFS via PyMuPDF (144 DPI PNG → base64).
+4. **Ollama `/api/chat`** to the configured VL model (`qwen3-vl:8b` by default) with the page images attached as `messages[].images`.
+5. Answer is prefixed with `_(Visual fallback — read directly from page images.)_` so users see which path served them.
+
+The encoder load is **expensive** (3B params, ~6GB download + several minutes of CPU-side weight unpacking on first run) so it runs in a **daemon thread at retrieval startup**. The uvicorn worker stays responsive the entire time. Until the warmup finishes, `_get_colpali()` returns `None` and the fallback silently no-ops — queries fall through to the standard "no relevant info" message. Watch progress in the admin Language Models page (`visual_fallback.encoder_status` field) or via:
+
+```bash
+docker logs virchow_retrieval | grep colpali
+# [colpali] background warmup started (status=pending)
+# [colpali] background warmup complete (47.3s); visual fallback is live.
+```
+
+Tunables (all env, read at startup):
+
+| Var | Default | What it does |
+|---|---|---|
+| `ENABLE_COLPALI_FALLBACK` | `true` | Master switch. `false` skips the warmup entirely (saves memory, kills the fallback). |
+| `COLPALI_FALLBACK_VL_MODEL` | `qwen3-vl:8b` | Which Ollama model reads the page images. |
+| `COLPALI_FALLBACK_TOP_K` | `4` | Pages sent to the VL per query. |
+| `COLPALI_FALLBACK_PAGE_DPI` | `144` | Render resolution; bump to 200 for tiny print at the cost of speed. |
+
 ### Department Permissions — `/admin/permissions`
 
 For when documents are owned by one department but users from another need to search them. The table lists every active grant; the form at the top creates new ones. Each grant gives a `receiving` department read access to the `granting` department's documents.
@@ -446,6 +473,22 @@ Ollama on the host isn't reachable from the retrieval container, or no models ar
 curl -fs http://localhost:11434/api/tags | head
 ollama list
 ```
+
+**Frontend shows "Runtime TypeError: fetch failed" from `userSS.ts`**
+The Next.js SSR layer (`RootLayout`) calls `retrieval:/auth/type` on every page render. If retrieval can't respond within 60 seconds, that fetch throws and shows the red overlay. The most common cause in this repo is something CPU-pinning the retrieval container — historically the **ColPali fallback's first encoder load** (3B-param PaliGemma + LoRA) did this synchronously. That's now fixed by the daemon-thread warmup, but if you see this again:
+```bash
+docker ps                              # is virchow_retrieval marked "unhealthy"?
+docker logs virchow_retrieval | tail   # what's the last thing it did?
+docker stats virchow_retrieval         # is CPU pinned and memory growing?
+```
+If it's the encoder load: set `ENABLE_COLPALI_FALLBACK=false`, restart, and the frontend recovers immediately. Text RAG is unaffected by this flag.
+
+**Visual fallback never fires even though `ENABLE_COLPALI_FALLBACK=true`**
+Open `/admin/configuration/llm` and look at the `visual_fallback.encoder_status` field returned by `/api/admin/models`. Possible values:
+- `pending` — startup hasn't kicked the warmup yet (transient, ~1s).
+- `loading` — encoder is downloading/unpacking. Wait 5-10 minutes on first launch (~6GB pull from HuggingFace). Visual queries quietly no-op until ready.
+- `ready` — fallback is live; if it's not firing, the text path is producing answers that don't match the "not found" heuristic. Look for a `[visual-fallback]` log line on the query.
+- `failed` — see `encoder_detail` for the reason. Common: HuggingFace 401 on the PaliGemma base (it's gated; you may need to `huggingface-cli login` inside the container if `colpali_engine` ever switches to a gated default).
 
 ---
 

@@ -216,25 +216,100 @@ class RetrievalService:
         self.rbac = RBACManager(pool)
         self.embedder = MxbaiEmbedder()
         self._colpali: "_ColPaliEmbedder | None" = None
+        # ColPali encoder load happens in a daemon thread so the 3B-param
+        # PaliGemma base + LoRA adapter unpacking on CPU never blocks the
+        # uvicorn worker. Until the load finishes, _get_colpali() returns
+        # None and the visual-fallback path silently no-ops, falling back
+        # to the standard "no relevant info" message. Once the status flips
+        # to "ready", subsequent queries hit the full visual roundtrip.
+        # See _start_colpali_warmup for details.
+        self._colpali_status = "pending"       # pending | loading | ready | failed
+        self._colpali_status_msg = ""          # human-readable detail for /health and logs
+        if cfg.enable_colpali or cfg.enable_colpali_fallback:
+            self._start_colpali_warmup()
         logger.info("RetrievalService ready.")
 
-    def _get_colpali(self) -> "_ColPaliEmbedder | None":
-        """Lazy-load the ColPali query encoder on first visual search.
+    def _start_colpali_warmup(self) -> None:
+        """Kick off a background load of the ColPali query encoder.
 
-        Loads when EITHER `enable_colpali` (the full pipeline flag) or
-        `enable_colpali_fallback` (the slow-path-only flag) is true.
+        Why a thread, not the request path:
+          - ColPali = PaliGemma 3B base + LoRA adapter. First load downloads
+            ~6GB from HuggingFace and unpacks safetensors into CPU memory.
+            That stage is Python-heavy and holds the GIL for several
+            minutes, which would freeze the uvicorn event loop and make
+            /auth/type, /health, and every other endpoint time out.
+          - Pre-warming in a daemon thread at startup gets the load off
+            the request path. The worker stays responsive for normal text
+            RAG the entire time; only the visual-fallback method itself
+            waits on `_colpali_status == "ready"`.
+        """
+        if not _COLPALI_AVAILABLE:
+            self._colpali_status = "failed"
+            self._colpali_status_msg = "colpali-engine import failed"
+            return
+
+        import threading
+
+        def _load():
+            self._colpali_status = "loading"
+            try:
+                import time as _time
+                start = _time.time()
+                encoder = _ColPaliEmbedder.get_instance()
+                # Force the actual weight load NOW. The class otherwise
+                # waits until embed_query() is called, which would re-hit
+                # the blocking path on the first request.
+                encoder._ensure_loaded()
+                if encoder._model is None:
+                    raise RuntimeError("encoder._model is None after _ensure_loaded()")
+                # Sanity ping so any deferred errors surface here, not in
+                # the middle of an end-user request.
+                _ = encoder.embed_query("warmup")
+                elapsed = _time.time() - start
+                self._colpali = encoder
+                self._colpali_status = "ready"
+                self._colpali_status_msg = f"loaded in {elapsed:.1f}s"
+                logger.info(
+                    "[colpali] background warmup complete (%.1fs); "
+                    "visual fallback is live.",
+                    elapsed,
+                )
+            except Exception as e:
+                self._colpali_status = "failed"
+                self._colpali_status_msg = f"{type(e).__name__}: {str(e)[:200]}"
+                logger.warning(
+                    "[colpali] background warmup failed: %s — visual "
+                    "fallback will silently no-op.",
+                    self._colpali_status_msg,
+                )
+
+        thread = threading.Thread(
+            target=_load, name="colpali-warmup", daemon=True
+        )
+        thread.start()
+        logger.info("[colpali] background warmup started (status=pending)")
+
+    def _get_colpali(self) -> "_ColPaliEmbedder | None":
+        """Return the ColPali encoder when ready, None otherwise.
+
+        Never triggers a synchronous model load on the request thread —
+        that's strictly the warmup thread's job. Callers that hit this
+        before the warmup finishes get None and should fall through to
+        their non-visual path.
         """
         if not (cfg.enable_colpali or cfg.enable_colpali_fallback):
             return None
-        if self._colpali is not None:
+        if self._colpali_status == "ready":
             return self._colpali
-        if not _COLPALI_AVAILABLE:
+        if self._colpali_status in ("pending", "loading"):
+            logger.info(
+                "[visual-fallback] ColPali still warming up "
+                "(status=%s, %s); skipping visual path this turn.",
+                self._colpali_status, self._colpali_status_msg,
+            )
             return None
-        try:
-            self._colpali = _ColPaliEmbedder.get_instance()
-        except Exception as e:
-            logger.warning("ColPali encoder unavailable: %s", e)
-        return self._colpali
+        # status == "failed" — already logged at warmup time
+        return None
 
     # ── Visual fallback: ColPali pages → VL model ─────────────────────────────
 

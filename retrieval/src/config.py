@@ -45,13 +45,14 @@ class RAGConfig:
         # (e.g. qwen3-vl:8b). Useful when OCR mis-handled pages that ColPali
         # still captured as images.
         #
-        # OFF by default until the model load is moved off the request path:
-        # ColPali v1.2 is a 3B-param model and `ColPali.from_pretrained` on
-        # CPU stalls the Python event loop for several minutes the first
-        # time it's called, which makes /auth/type and every other endpoint
-        # time out (the Next.js SSR layer then renders "fetch failed").
-        # Once we pre-warm in a startup thread, this default flips to True.
-        self.enable_colpali_fallback = os.getenv("ENABLE_COLPALI_FALLBACK", "false").lower() == "true"
+        # ON by default. The encoder load (3B-param PaliGemma + LoRA on CPU,
+        # several minutes the first time) runs in a daemon thread at
+        # service startup (see RetrievalService._start_colpali_warmup), so
+        # the worker stays responsive throughout. Until the warmup finishes,
+        # the fallback method silently no-ops and queries fall through to
+        # the standard "no relevant info" message. Set this to false if
+        # you want to skip the warmup entirely (e.g. CI smoke tests).
+        self.enable_colpali_fallback = os.getenv("ENABLE_COLPALI_FALLBACK", "true").lower() == "true"
         self.colpali_fallback_top_k  = int(os.getenv("COLPALI_FALLBACK_TOP_K", "4"))
         self.colpali_fallback_vl_model = os.getenv("COLPALI_FALLBACK_VL_MODEL", "qwen3-vl:8b")
         self.colpali_fallback_page_dpi = int(os.getenv("COLPALI_FALLBACK_PAGE_DPI", "144"))

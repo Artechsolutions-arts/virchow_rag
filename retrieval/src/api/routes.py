@@ -173,6 +173,13 @@ def create_router(svc):
             "ollama_url": cfg.llm_url,
             "available_models": sorted(available, key=lambda m: m["name"]),
             "ollama_error": ollama_error,
+            "visual_fallback": {
+                "enabled": cfg.enable_colpali_fallback,
+                "vl_model": cfg.colpali_fallback_vl_model,
+                "top_k_pages": cfg.colpali_fallback_top_k,
+                "encoder_status": getattr(svc, "_colpali_status", "unknown"),
+                "encoder_detail": getattr(svc, "_colpali_status_msg", ""),
+            },
         })
 
     @router.post("/admin/models/llm")
