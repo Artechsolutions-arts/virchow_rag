@@ -108,20 +108,29 @@ def normalize_party_name(name: str | None) -> str | None:
 
 
 def _call_llm(prompt: str) -> Optional[str]:
-    """Call the local Ollama LLM. Returns raw text or None on failure."""
+    """Call the local Ollama LLM. Returns raw text or None on failure.
+
+    Uses /api/chat so vision-language models (e.g. qwen3-vl:8b) work
+    alongside text-only ones — see llm_client._call_ollama for the
+    rationale.
+    """
     try:
         response = httpx.post(
-            f"{cfg.llm_url}/api/generate",
+            f"{cfg.llm_url}/api/chat",
             json={
                 "model": cfg.effective_llm_model(),
-                "prompt": prompt,
+                "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "options": {"temperature": 0.0, "num_predict": 512},
             },
             timeout=120.0,
         )
         response.raise_for_status()
-        return response.json().get("response", "")
+        data = response.json()
+        text = (data.get("message") or {}).get("content") or ""
+        if not text:
+            text = data.get("response") or ""
+        return text
     except Exception as e:
         logger.warning("[EntityExtractor] LLM call failed: %s", e)
         return None

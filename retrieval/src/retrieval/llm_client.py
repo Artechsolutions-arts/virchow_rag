@@ -440,29 +440,141 @@ def _format_history(history: list) -> str:
     return text[:_MAX_HISTORY_CHARS]
 
 
+_SYSTEM_PROMPT_MARKERS = (_PRECISION_PROMPT, _EXPLORATORY_PROMPT,
+                          _ANALYTICAL_PROMPT, _MULTI_DOC_SYNTHESIS_PROMPT)
+
+
+# Reasoning models wrap their internal monologue in <think>…</think>
+# (Qwen3, DeepSeek-R1, …). Strip these tags so the user sees only the
+# final answer.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+_ORPHAN_THINK_OPEN_RE = re.compile(r"^<think>\s*", re.IGNORECASE)
+_ORPHAN_THINK_CLOSE_RE = re.compile(r"^.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>…</think> blocks from reasoning-model output. Handles
+    the well-formed case and a couple of unterminated variants we've seen
+    (qwen3-vl sometimes truncates mid-think when the budget runs out)."""
+    if not text:
+        return text
+    # Well-formed: drop every full <think>…</think> block.
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    # If a stray closing </think> remains, drop everything up to and
+    # including it — that's the reasoning that lost its open tag.
+    if "</think>" in cleaned.lower():
+        cleaned = _ORPHAN_THINK_CLOSE_RE.sub("", cleaned)
+    # If only the opening <think> is present (the model never closed it),
+    # treat everything after it as the user-visible answer.
+    if cleaned.lower().lstrip().startswith("<think>"):
+        cleaned = _ORPHAN_THINK_OPEN_RE.sub("", cleaned.lstrip())
+    return cleaned.strip()
+
+
+def _split_system_user(prompt: str) -> tuple[str, str]:
+    """If `prompt` starts with one of the known system prompts, split it
+    into (system, user). Otherwise return ('', prompt). Used so we send
+    properly structured messages to /api/chat — vision-language models
+    in particular only reliably generate when the user turn is the
+    actual question, not the entire instruction stack."""
+    for marker in _SYSTEM_PROMPT_MARKERS:
+        if marker and prompt.startswith(marker):
+            user = prompt[len(marker):].lstrip("\n").lstrip()
+            return marker, user
+    return "", prompt
+
+
 def _call_ollama(prompt: str, num_predict: int) -> str:
-    # B-C5: catch timeout and connection errors explicitly — never let raw httpx exceptions
-    # bubble up to the user as 500 errors.
+    """Single LLM call via Ollama /api/chat.
+
+    Why /api/chat instead of /api/generate:
+    - /api/chat accepts the modern `messages` schema. Vision-language
+      models (e.g. qwen3-vl:8b) reliably generate text only when they
+      see a proper system+user turn structure. The legacy /api/generate
+      endpoint with a bare `prompt` field returns empty strings for VL
+      models because they're waiting for a `messages` payload.
+    - /api/generate still works for text-only models, but /api/chat
+      works for both. Routing everything through it keeps one code path.
+    - For VL models we just don't pass images — same result as a
+      text-only call but with a properly formed turn.
+
+    B-C5: catch timeout/connection errors so raw httpx exceptions never
+    bubble up to the user as 500s.
+    """
+    system_text, user_text = _split_system_user(prompt)
+    messages = []
+    if system_text:
+        messages.append({"role": "system", "content": system_text})
+    messages.append({"role": "user", "content": user_text})
+
+    # Reasoning-capable models (qwen3-*, qwen3-vl, deepseek-r1, …) consume
+    # part of their token budget on a <think>…</think> phase before they
+    # emit any user-visible content. If we cap them at the default
+    # cfg.max_tokens (2048) the budget can run out mid-think and the
+    # response comes back with empty `message.content`. Bump the cap and
+    # ask Ollama to suppress thinking when possible.
+    model_lower = cfg.effective_llm_model().lower()
+    is_reasoning = any(
+        marker in model_lower
+        for marker in ("qwen3", "qwen-3", "deepseek-r1", "r1:", "reasoner")
+    )
+    effective_predict = max(num_predict, 8192) if is_reasoning else num_predict
+
+    payload = {
+        "model": cfg.effective_llm_model(),
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": 0.0,
+            "num_predict": effective_predict,
+            "top_p": 1.0,
+            "repeat_penalty": 1.1,
+        },
+    }
+    if is_reasoning:
+        # Newer Ollama (≥0.4.0) honours this top-level flag for thinking
+        # models; older versions just ignore it harmlessly.
+        payload["think"] = False
+
     try:
         response = httpx.post(
-            f"{cfg.llm_url}/api/generate",
-            json={
-                "model": cfg.effective_llm_model(),
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.0,
-                    "num_predict": num_predict,
-                    "top_p": 1.0,
-                    "repeat_penalty": 1.1,
-                },
-            },
-            timeout=180.0,
+            f"{cfg.llm_url}/api/chat",
+            json=payload,
+            timeout=240.0,
         )
         response.raise_for_status()
-        return response.json().get("response", "").strip()
+        data = response.json()
+        # /api/chat returns {"message": {"role": "assistant", "content": "..."}}
+        msg = data.get("message") or {}
+        raw = msg.get("content") or ""
+        text = _strip_thinking(raw).strip()
+        # Fallback A: some thinking models still emit only `thinking` even
+        # when think=False is requested. If we have a coherent thinking
+        # field, use it so the user gets something useful rather than the
+        # generic "empty answer" fallback.
+        if not text:
+            thinking = _strip_thinking(msg.get("thinking") or "").strip()
+            if thinking:
+                logger.info(
+                    "LLM emitted thinking-only response (%d chars); "
+                    "using thinking as the answer.", len(thinking),
+                )
+                text = thinking
+        # Fallback B: /api/generate's `response` field in case of mixed
+        # Ollama versions or a model that ignores the chat schema.
+        if not text:
+            text = _strip_thinking(data.get("response") or "").strip()
+        if not text:
+            logger.warning(
+                "Ollama returned empty for model=%s eval_count=%s "
+                "done_reason=%s — increasing num_predict may help.",
+                cfg.effective_llm_model(),
+                data.get("eval_count"),
+                data.get("done_reason"),
+            )
+        return text
     except httpx.TimeoutException:
-        logger.error("Ollama request timed out after 120s")
+        logger.error("Ollama request timed out after 180s")
         raise RuntimeError("The AI model took too long to respond. Please try again.")
     except httpx.ConnectError:
         logger.error(f"Cannot connect to Ollama at {cfg.llm_url}")
