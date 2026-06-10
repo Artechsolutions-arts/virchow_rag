@@ -25,13 +25,39 @@ _FILE_EXT_RE = re.compile(r'\.(pdf|xlsx?|docx?|csv|txt)$', re.IGNORECASE)
 _FILENAME_RE = re.compile(r'\S+\.(?:pdf|xlsx?|docx?|csv|txt)', re.IGNORECASE)
 
 
+_EMPTY_ANSWER_FALLBACK = (
+    "_The model returned an empty answer for this question. "
+    "This usually means the selected LLM isn't a good fit for text-only "
+    "Q&A — try switching it from **Admin Panel → Language Models** "
+    "(e.g. back to `qwen2.5:14b-instruct`). The retrieved sources are "
+    "still listed below._"
+)
+
+
 def _compose_answer_with_sources(answer: str, citations: list) -> str:
     """Append a markdown 'Sources:' block with proxy URLs to the answer so it
     survives DB persistence. The frontend renderer detects /api/chat/file/
     links and opens the in-app PDF preview modal instead of navigating away.
-    Skips if the answer already contains a 'Sources:' block (idempotent) or
-    if there are no citations."""
+
+    Defensive: if the LLM returned a blank answer (e.g. the active model is
+    qwen3-vl:8b which sometimes returns no text for text-only prompts), we
+    substitute a visible fallback so the user gets a clear explanation
+    instead of a Sources-only message. Logs the event so admins can see
+    when this is happening.
+
+    Skips appending sources if the answer already contains a 'Sources:'
+    block (idempotent) or if there are no citations."""
     from urllib.parse import quote
+
+    stripped = (answer or "").strip()
+    if not stripped:
+        logger.warning(
+            "LLM returned an empty answer; substituting fallback "
+            "(citations=%d). Check the active model in app_settings.",
+            len(citations) if citations else 0,
+        )
+        answer = _EMPTY_ANSWER_FALLBACK
+
     if not citations:
         return answer
     if re.search(r'(?im)^\s*Sources:\s*$', answer):
