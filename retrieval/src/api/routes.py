@@ -103,6 +103,41 @@ def create_router(svc):
     async def list_departments(user: dict = Depends(get_current_user)):
         return JSONResponse(svc.rbac.list_departments())
 
+    # ── Department access grants (admin-only) ────────────────────────────────
+    # Let admins give one department read access to another's documents,
+    # so e.g. the Sales team can search documents owned by the Default
+    # department without re-tagging every row.
+
+    def _require_admin(u: dict):
+        if not (u.get("is_super_admin") or u.get("role") == "admin"):
+            raise HTTPException(status_code=403, detail="Admin only")
+
+    @router.get("/admin/dept-grants")
+    async def list_dept_grants(user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        return JSONResponse(svc.rbac.list_dept_grants())
+
+    @router.post("/admin/dept-grants")
+    async def create_dept_grant(req: Request, user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        body = await req.json()
+        granting = (body.get("granting_dept_id") or "").strip()
+        receiving = (body.get("receiving_dept_id") or "").strip()
+        if not granting or not receiving:
+            raise HTTPException(status_code=400, detail="granting_dept_id and receiving_dept_id are required")
+        if granting == receiving:
+            raise HTTPException(status_code=400, detail="A department cannot grant access to itself")
+        created = svc.rbac.create_dept_grant(granting, receiving, user["sub"])
+        return JSONResponse(created, status_code=201)
+
+    @router.delete("/admin/dept-grants/{grant_id}")
+    async def delete_dept_grant(grant_id: str, user: dict = Depends(get_current_user)):
+        _require_admin(user)
+        removed = svc.rbac.delete_dept_grant(grant_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Grant not found")
+        return JSONResponse({"ok": True})
+
     # ── Query ─────────────────────────────────────────────────────────────────
 
     @router.post("/query")

@@ -417,6 +417,81 @@ class RBACManager:
         finally:
             self._put_conn(conn)
 
+    # ── Department access grants ──────────────────────────────────────────────
+
+    def list_dept_grants(self) -> list:
+        """Return every active read-grant with both department names so the
+        admin UI can render a human-readable table without a second roundtrip."""
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute(
+                "SELECT g.id::TEXT AS id, "
+                "       g.granting_dept_id::TEXT AS granting_dept_id, "
+                "       gd.name AS granting_dept_name, "
+                "       g.receiving_dept_id::TEXT AS receiving_dept_id, "
+                "       rd.name AS receiving_dept_name, "
+                "       g.access_type, g.expires_at::TEXT AS expires_at, "
+                "       g.created_at::TEXT AS created_at "
+                "FROM dept_access_grants g "
+                "JOIN departments gd ON gd.id = g.granting_dept_id "
+                "JOIN departments rd ON rd.id = g.receiving_dept_id "
+                "WHERE (g.expires_at IS NULL OR g.expires_at > NOW()) "
+                "ORDER BY gd.name, rd.name"
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+            return rows
+        finally:
+            self._put_conn(conn)
+
+    def create_dept_grant(self, granting_dept_id: str, receiving_dept_id: str,
+                          granted_by: str = None) -> dict:
+        """Create (or upsert) a read grant. Returns the row including names."""
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute(
+                "INSERT INTO dept_access_grants "
+                "  (granting_dept_id, receiving_dept_id, granted_by, access_type) "
+                "VALUES (%s, %s, %s, 'read') "
+                "ON CONFLICT (granting_dept_id, receiving_dept_id) DO UPDATE "
+                "  SET access_type = EXCLUDED.access_type "
+                "RETURNING id::TEXT",
+                (granting_dept_id, receiving_dept_id, granted_by),
+            )
+            grant_id = cur.fetchone()["id"]
+            cur.execute(
+                "SELECT g.id::TEXT AS id, "
+                "       g.granting_dept_id::TEXT AS granting_dept_id, "
+                "       gd.name AS granting_dept_name, "
+                "       g.receiving_dept_id::TEXT AS receiving_dept_id, "
+                "       rd.name AS receiving_dept_name, "
+                "       g.access_type, g.created_at::TEXT AS created_at "
+                "FROM dept_access_grants g "
+                "JOIN departments gd ON gd.id = g.granting_dept_id "
+                "JOIN departments rd ON rd.id = g.receiving_dept_id "
+                "WHERE g.id = %s",
+                (grant_id,),
+            )
+            row = dict(cur.fetchone())
+            cur.close()
+            return row
+        finally:
+            self._put_conn(conn)
+
+    def delete_dept_grant(self, grant_id: str) -> bool:
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute("DELETE FROM dept_access_grants WHERE id = %s",
+                        (grant_id,))
+            removed = cur.rowcount > 0
+            cur.close()
+            return removed
+        finally:
+            self._put_conn(conn)
+
     # ── Chat ──────────────────────────────────────────────────────────────────
 
     def create_chat(self, user_id: str, department_id: str, title: str = None) -> str:

@@ -83,6 +83,7 @@ function buildItems(
   // 2. Permissions
   if (!isCurator) {
     add(SECTIONS.PERMISSIONS, ADMIN_ROUTES.USERS);
+    add(SECTIONS.PERMISSIONS, ADMIN_ROUTES.PERMISSIONS);
   }
 
   // 3. Configuration / Organization

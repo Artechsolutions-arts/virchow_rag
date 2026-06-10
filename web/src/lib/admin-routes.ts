@@ -148,6 +148,12 @@ export const ADMIN_ROUTES = {
     title: "Users & Requests",
     sidebarLabel: "Users",
   },
+  PERMISSIONS: {
+    path: "/admin/permissions",
+    icon: SvgUsers,
+    title: "Department Permissions",
+    sidebarLabel: "Permissions",
+  },
   USAGE: {
     path: "/admin/performance/usage",
     icon: SvgActivity,
