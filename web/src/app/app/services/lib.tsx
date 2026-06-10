@@ -24,6 +24,9 @@ import { SEARCH_PARAM_NAMES } from "./searchParams";
 import { WEB_SEARCH_TOOL_ID } from "@/app/app/components/tools/constants";
 import { SEARCH_TOOL_ID } from "@/app/app/components/tools/constants";
 import { Packet } from "./streamingModels";
+import { SYSTEM_NODE_ID } from "@/app/app/services/messageTree";
+
+const SYSTEM_MESSAGE_ID = -3;
 
 export async function updateLlmOverrideForChatSession(
   chatSessionId: string,
@@ -365,6 +368,47 @@ export function processRawChatHistory(
       parentMesage.childrenNodeIds = childrenIds;
     }
   });
+
+  // Synthesize a SYSTEM_NODE_ID root so subsequent in-memory upserts (e.g.
+  // editing an existing message → re-submit creates a sibling that attaches
+  // to SYSTEM_NODE_ID by convention) don't dangle off a parent that never
+  // existed in the loaded tree. Without this, edit-resubmits produce a
+  // warning and the new nodes never reach getLatestMessageChain.
+  if (messages.size > 0 && !messages.has(SYSTEM_NODE_ID)) {
+    const rootChildren = Array.from(messages.values())
+      .filter(
+        (m) =>
+          m.parentNodeId === null ||
+          m.parentNodeId === undefined ||
+          !messages.has(m.parentNodeId)
+      )
+      .map((m) => m.nodeId);
+
+    // Point every dangling root at the system node so the chain walker can
+    // descend through them.
+    rootChildren.forEach((nodeId) => {
+      const node = messages.get(nodeId);
+      if (node) node.parentNodeId = SYSTEM_NODE_ID;
+    });
+
+    const latestChild =
+      rootChildren.length > 0
+        ? rootChildren[rootChildren.length - 1]
+        : undefined;
+
+    messages.set(SYSTEM_NODE_ID, {
+      nodeId: SYSTEM_NODE_ID,
+      messageId: SYSTEM_MESSAGE_ID,
+      message: "",
+      type: "system",
+      files: [],
+      toolCall: null,
+      parentNodeId: null,
+      childrenNodeIds: rootChildren,
+      latestChildNodeId: latestChild ?? null,
+      packets: [],
+    } as unknown as Message);
+  }
 
   return messages;
 }
