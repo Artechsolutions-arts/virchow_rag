@@ -281,6 +281,8 @@ def _precision_score(chunk: dict) -> float:
 
     if chunk.get("_keyword_hit"):
         score += 0.20
+    if chunk.get("_filename_hit"):
+        score += 0.20  # user explicitly requested this file — same priority as keyword match
 
     page = int(chunk.get("page_num") or 0)
     if page <= 3:

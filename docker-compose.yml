@@ -168,6 +168,10 @@ services:
       SEAWEEDFS_FILER_URL: http://192.168.10.10:889
       SEAWEEDFS_BUCKET: rag-docs
       INGEST_URL: http://ingest-api:8000
+      ENABLE_COLPALI_FALLBACK: "true"
+      HF_HUB_DOWNLOAD_TIMEOUT: "30"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       ingest-api:
         condition: service_healthy
@@ -201,4 +205,5 @@ services:
   # ── Ollama LLM (runs on host — not containerized) ─────────────────────────────
   # Access via host.docker.internal:11434 — start with: ollama serve
 
-volumes: {}
+volumes:
+  hf_cache:    # persists ColPali base model across container recreations

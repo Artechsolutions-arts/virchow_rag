@@ -817,11 +817,44 @@ class RBACManager:
 
     def vector_search_by_filename(self, query_embedding, dept_id: str,
                                    filename_pattern: str, top_k: int = 10) -> list:
-        """Vector search restricted to documents whose file_name contains filename_pattern."""
+        """Vector search restricted to documents whose file_name contains filename_pattern.
+
+        Tries exact match first (with or without extension), then falls back to ILIKE
+        so that "26-27-20011" doesn't get crowded out by "26-27-200110" etc.
+        """
+        import os as _os
         conn = self._get_conn()
         try:
             cur = self._cur(conn)
             dept_clause, dept_params = self._accessible_dept_clause(dept_id)
+
+            # Try exact-match variants first: bare name or bare name + common extensions
+            base = _os.path.splitext(filename_pattern)[0]
+            exact_candidates = [filename_pattern, f"{base}.pdf", f"{base}.PDF",
+                                 f"{base}.xlsx", f"{base}.docx"]
+            exact_sql = f"""
+                SELECT e.chunk_id, c.chunk_text, c.document_id, c.page_num,
+                       d.file_name, d.file_path, d.id as document_id,
+                       d.doc_type, d.doc_month, d.party_name,
+                       c.quality_score,
+                       1 - (e.embedding <=> %s::vector) AS similarity
+                FROM   embeddings e
+                JOIN   chunks c ON c.id = e.chunk_id
+                JOIN   documents d ON d.id = c.document_id
+                WHERE  d.file_name = ANY(%s)
+                  AND  {dept_clause}
+                  AND  {self._quality_filter()}
+                ORDER  BY e.embedding <=> %s::vector
+                LIMIT  %s
+            """
+            cur.execute(exact_sql,
+                        [str(query_embedding), exact_candidates] + dept_params + [str(query_embedding), top_k])
+            rows = [dict(r) for r in cur.fetchall()]
+            if rows:
+                cur.close()
+                return rows
+
+            # Fall back to ILIKE pattern search
             cur.execute(
                 f"""
                 SELECT e.chunk_id, c.chunk_text, c.document_id, c.page_num,
@@ -1006,7 +1039,14 @@ class RBACManager:
 
     def keyword_search_by_filename_pattern(self, keywords: list, dept_id: str,
                                             filename_pattern: str, top_k: int = 5) -> list:
-        """Keyword search restricted to a filename ILIKE pattern (e.g. 'MAY-U3-RM-24-25-31')."""
+        """Keyword search restricted to the exact target file only.
+
+        Only matches d.file_name exactly (with/without extension variants).
+        No ILIKE fallback — a pattern like '26-27-20011' must not pull in
+        '26-27-200110' through '26-27-200119'. When no keyword hits exist
+        for the exact file, vector_search_by_filename (with _filename_hit) covers it.
+        """
+        import os as _os
         if not keywords or not filename_pattern:
             return []
         conn = self._get_conn()
@@ -1015,8 +1055,12 @@ class RBACManager:
             cur = self._cur(conn)
             and_conditions = " AND ".join(["c.chunk_text ILIKE %s"] * len(patterns))
             dept_clause, dept_params = self._accessible_dept_clause(dept_id)
-            cur.execute(
-                f"""
+
+            base = _os.path.splitext(filename_pattern)[0]
+            exact_candidates = [filename_pattern, f"{base}.pdf", f"{base}.PDF",
+                                 f"{base}.xlsx", f"{base}.docx"]
+
+            exact_sql = f"""
                 SELECT DISTINCT ON (c.id)
                        c.id AS chunk_id, c.chunk_text, c.document_id, c.page_num,
                        d.file_name, d.file_path, d.id AS document_id,
@@ -1026,14 +1070,13 @@ class RBACManager:
                 JOIN   documents d ON d.id = c.document_id
                 JOIN   embeddings e ON e.chunk_id = c.id
                 WHERE  {and_conditions}
-                  AND  d.file_name ILIKE %s
+                  AND  d.file_name = ANY(%s)
                   AND  {dept_clause}
                   AND  {self._quality_filter()}
                 ORDER  BY c.id
                 LIMIT  %s
-                """,
-                patterns + [f'%{filename_pattern}%'] + dept_params + [top_k],
-            )
+            """
+            cur.execute(exact_sql, patterns + [exact_candidates] + dept_params + [top_k])
             rows = [dict(r) for r in cur.fetchall()]
             cur.close()
             for r in rows:

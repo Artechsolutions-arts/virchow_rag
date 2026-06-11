@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Matches document IDs like DEC-U2-PUR-24-25-40, INV-2024-001, PO-23-456, etc.
 _DOC_ID_RE = re.compile(r'\b([A-Z][A-Z0-9]{1,}(?:-[A-Z0-9]+){2,})\b')
+# Also matches numeric-leading IDs like 26-27-20011 or 24-25-200807
+_NUMERIC_DOC_ID_RE = re.compile(r'\b(\d{2}-\d{2}-\d{4,}[A-Z0-9]*)\b')
 
 # Matches file extensions to strip before doc-ID matching
 _FILE_EXT_RE = re.compile(r'\.(pdf|xlsx?|docx?|csv|txt)$', re.IGNORECASE)
@@ -519,6 +521,11 @@ class RetrievalService:
                 return clean
             if _DOC_ID_RE.fullmatch(clean):
                 return clean
+            # Numeric-leading IDs like 26-27-20011 or 24-25-200807
+            if _NUMERIC_DOC_ID_RE.fullmatch(name_only):
+                return clean
+            if _NUMERIC_DOC_ID_RE.fullmatch(clean):
+                return clean
         return None
 
     def _extract_keywords(self, question: str) -> list:
@@ -695,6 +702,10 @@ class RetrievalService:
             if not vec_results:
                 logger.info(f"No chunks for {doc_name!r}, falling back to global search")
                 vec_results = self.rbac.vector_search(query_vec, dept_id, top_k=cfg.top_k_retrieval)
+            else:
+                # User explicitly asked for this file — bypass similarity threshold
+                for r in vec_results:
+                    r["_filename_hit"] = True
             active_files = []
 
         elif active_files:
@@ -707,6 +718,7 @@ class RetrievalService:
                     query_vec, dept_id, fname, top_k=cfg.top_k_retrieval
                 ):
                     if r["chunk_id"] not in seen_ids:
+                        r["_filename_hit"] = True
                         vec_results.append(r)
                         seen_ids.add(r["chunk_id"])
 
@@ -784,10 +796,10 @@ class RetrievalService:
         # 8a. Apply quality score penalty for medium-quality OCR chunks
         merged = self._apply_quality_penalty(merged)
 
-        # 8b. Threshold filter: keyword hits bypass threshold; vector-only hits must meet it
+        # 8b. Threshold filter: keyword/filename hits bypass threshold; vector-only hits must meet it
         results = [
             r for r in merged
-            if r.get("_keyword_hit") or float(r["similarity"]) >= cfg.similarity_threshold
+            if r.get("_keyword_hit") or r.get("_filename_hit") or float(r["similarity"]) >= cfg.similarity_threshold
         ]
 
         # 8c. Rerank before cap — ensures best chunks from the full pool survive the cut.

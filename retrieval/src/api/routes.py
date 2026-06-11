@@ -523,9 +523,8 @@ def create_router(svc):
         if role not in ("user", "admin", "hod"):
             raise HTTPException(status_code=400, detail="role must be user, admin, or hod")
 
-        existing = svc.rbac.get_user_by_email(email)
-        if existing:
-            raise HTTPException(status_code=409, detail="A user with this email already exists")
+        if svc.rbac.get_user_by_name(name):
+            raise HTTPException(status_code=409, detail="Username already taken")
 
         dept_id = (
             svc.rbac.get_or_create_dept_by_name(department)
@@ -584,6 +583,12 @@ def create_router(svc):
         target = svc.rbac.get_user_by_id(user_id)
         if not target:
             raise HTTPException(status_code=404, detail="User not found")
+
+        # If the name changed, ensure the new name isn't taken by someone else
+        if target["name"].lower() != name.lower():
+            conflict = svc.rbac.get_user_by_name(name)
+            if conflict and str(conflict["id"]) != user_id:
+                raise HTTPException(status_code=409, detail="Username already taken")
 
         dept_id = (
             svc.rbac.get_or_create_dept_by_name(department)
