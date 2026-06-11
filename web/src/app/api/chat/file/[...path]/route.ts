@@ -17,14 +17,14 @@ export async function GET(
   }
 
   const { path } = await params;
-  const filePath = path.join("/");
-  const seaweedUrl = `${SEAWEEDFS_URL}/buckets/${SEAWEEDFS_BUCKET}/raw/${filePath}`;
+  // Each segment is already decoded by Next.js router; re-encode for the URL
+  const seaweedUrl = `${SEAWEEDFS_URL}/buckets/${SEAWEEDFS_BUCKET}/raw/${path.map(encodeURIComponent).join("/")}`;
 
   try {
     const res = await fetch(seaweedUrl);
     if (!res.ok) {
       return NextResponse.json(
-        { detail: `File not found: ${filePath}` },
+        { detail: `File not found: ${path.join("/")}` },
         { status: 404 }
       );
     }

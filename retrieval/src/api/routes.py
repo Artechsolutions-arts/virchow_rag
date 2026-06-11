@@ -309,7 +309,6 @@ def create_router(svc):
 
     @router.get("/api/documents/{doc_id}")
     async def get_document(doc_id: str, user: dict = Depends(get_current_user)):
-        import os
         from fastapi.responses import RedirectResponse
 
         conn = svc.rbac._get_conn()
@@ -324,8 +323,82 @@ def create_router(svc):
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        seaweed_url = svc._get_seaweedfs_url(row["file_path"])
+        # Use file_name (not file_path) to build the SeaweedFS URL — the pipeline stores
+        # the raw PDF as raw/{file_name}, but file_path is the local upload path with UUID prefix.
+        seaweed_url = svc._get_seaweedfs_url(row["file_name"])
         return RedirectResponse(url=seaweed_url, status_code=302)
+
+    # ── Document file server (SeaweedFS + local-disk fallback) ────────────────
+
+    @router.get("/documents/serve/{filename:path}")
+    async def serve_document_file(
+        filename: str,
+        background_tasks: BackgroundTasks,
+        user: dict = Depends(get_current_user),
+    ):
+        """Serve a document PDF.
+
+        Priority order:
+          1. SeaweedFS raw/{filename}  (fast path, works for most files)
+          2. Local disk at the file_path stored in the documents table
+             (fallback for files that pre-date SeaweedFS or whose upload failed)
+
+        When serving from local disk, the file is also uploaded to SeaweedFS in
+        the background so subsequent requests hit the fast path.
+        """
+        import mimetypes
+        import requests as _req
+        from fastapi.responses import Response
+
+        def _upload_to_seaweedfs_bg(local_path: str, fname: str) -> None:
+            try:
+                with open(local_path, "rb") as fh:
+                    data = fh.read()
+                url = f"{cfg.seaweedfs_filer_url.rstrip('/')}/buckets/{cfg.seaweedfs_bucket}/raw/{fname}"
+                _req.put(url, data=data, headers={"Content-Type": "application/pdf"}, timeout=60)
+                logger.info("[serve_document_file] Backfilled '%s' → SeaweedFS raw/%s", local_path, fname)
+            except Exception as e:
+                logger.warning("[serve_document_file] SeaweedFS backfill failed for '%s': %s", fname, e)
+
+        # 1. Try SeaweedFS
+        seaweed_url = svc._get_seaweedfs_url(filename)
+        try:
+            r = _req.get(seaweed_url, timeout=30)
+            if r.status_code == 200:
+                content_type = r.headers.get("Content-Type", "application/pdf")
+                return Response(r.content, media_type=content_type,
+                                headers={"Content-Disposition": f'inline; filename="{filename}"'})
+        except Exception:
+            pass
+
+        # 2. Fall back to local disk — look up file_path in DB by file_name
+        conn = svc.rbac._get_conn()
+        try:
+            cur = svc.rbac._cur(conn)
+            name_stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+            variants = [filename, name_stem, f"{name_stem}.pdf", f"{name_stem}.PDF"]
+            placeholders = ",".join(["%s"] * len(variants))
+            cur.execute(
+                f"SELECT file_name, file_path FROM documents WHERE file_name = ANY(ARRAY[{placeholders}]::text[]) LIMIT 1",
+                variants,
+            )
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            svc.rbac._put_conn(conn)
+
+        if row:
+            file_path = row.get("file_path") or ""
+            if file_path and os.path.exists(file_path):
+                content_type = mimetypes.guess_type(file_path)[0] or "application/pdf"
+                with open(file_path, "rb") as fh:
+                    data = fh.read()
+                # Upload to SeaweedFS in background so future requests use fast path
+                background_tasks.add_task(_upload_to_seaweedfs_bg, file_path, row["file_name"])
+                return Response(data, media_type=content_type,
+                                headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
     # ── Document list ─────────────────────────────────────────────────────────
 

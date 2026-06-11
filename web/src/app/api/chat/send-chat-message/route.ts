@@ -44,12 +44,16 @@ export async function POST(request: NextRequest) {
         answer = answer.replace(singleSourcePrefix, "").trim();
       }
 
-      // Append citation links as markdown
+      // Append citation links as markdown.
+      // Use the proxied /api/chat/file/<filename> path so the browser never
+      // hits the internal SeaweedFS address directly — that IP is unreachable
+      // from end-user machines. The [...path] route proxies the fetch
+      // server-side from inside the Docker network.
       const citations: Array<{ name: string; document_id: string; url: string }> =
         data.citations ?? [];
       if (citations.length > 0) {
         const sourceLines = citations
-          .map((c) => `- [${c.name}](${c.url ?? "#"})`)
+          .map((c) => `- [${c.name}](/api/chat/file/${encodeURIComponent(c.name)})`)
           .join("\n");
         answer = `${answer}\n\n**Sources:**\n${sourceLines}`;
       }

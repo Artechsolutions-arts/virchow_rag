@@ -172,6 +172,7 @@ services:
       HF_HUB_DOWNLOAD_TIMEOUT: "30"
     volumes:
       - hf_cache:/root/.cache/huggingface
+      - ./ingest/uploads:/app/uploads:ro   # serve locally-stored ingest files
     depends_on:
       ingest-api:
         condition: service_healthy
