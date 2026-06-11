@@ -324,6 +324,10 @@ class SequentialPipeline:
                     if _early_status in ("completed", "processing"):
                         logger.info("[SeqPipeline] '%s' already %s — skipping duplicate",
                                     doc.filename, _early_status)
+                        # Still backfill SeaweedFS in case the first worker missed it
+                        # (e.g. another worker raced ahead; file may still be on disk)
+                        if _early_status == "completed":
+                            self._upload_to_seaweedfs(doc)
                         return
             except Exception:
                 pass
