@@ -87,52 +87,17 @@ class SeaweedFSClient:
         content_type: str = None,
         metadata: dict = None,
     ) -> str:
-        """Upload bytes or a file-like object to SeaweedFS.
-
-        Tries S3 API first; falls back to Filer HTTP API automatically
-        so uploads succeed even when the S3 gateway (port 8333) is down.
-        """
+        """Upload bytes or a file-like object to SeaweedFS via Filer HTTP API."""
         if content_type is None:
             guessed, _ = mimetypes.guess_type(object_key)
             content_type = guessed or "application/octet-stream"
 
         if isinstance(data, (bytes, bytearray)):
             raw_bytes = bytes(data)
-            file_obj = io.BytesIO(raw_bytes)
         else:
             raw_bytes = data.read()
-            file_obj = io.BytesIO(raw_bytes)
 
-        extra_args = {"ContentType": content_type}
-        if metadata:
-            extra_args["Metadata"] = {k: str(v) for k, v in metadata.items()}
-
-        # Try S3 first
-        try:
-            async with self.session.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name=self.region_name,
-            ) as s3:
-                await self._ensure_bucket_exists(s3)
-                await s3.upload_fileobj(file_obj, self.bucket, object_key, ExtraArgs=extra_args)
-                logger.info("Uploaded %s to bucket %s via S3", object_key, self.bucket)
-                return object_key
-        except Exception as s3_exc:
-            logger.warning(
-                "S3 upload failed for '%s' (%s) — retrying via Filer HTTP API",
-                object_key, s3_exc,
-            )
-
-        # Filer fallback
-        try:
-            return await self._upload_via_filer(object_key, raw_bytes, content_type)
-        except Exception as filer_exc:
-            msg = f"SeaweedFS upload failed for '{object_key}' — S3: {s3_exc} | Filer: {filer_exc}"
-            logger.error(msg)
-            raise RuntimeError(msg) from filer_exc
+        return await self._upload_via_filer(object_key, raw_bytes, content_type)
 
     async def upload_local_file(self, object_key: str, local_path: str | Path) -> str:
         """Upload a local file to SeaweedFS via S3."""
@@ -234,17 +199,16 @@ class SeaweedFSClient:
         return f"{filer_url}/{self.bucket}/{object_key.lstrip('/')}"
 
     async def health_check(self) -> bool:
-        """Verify connectivity by listing buckets."""
+        """Verify connectivity via Filer HTTP API."""
+        import aiohttp
+        filer_base = getattr(settings, "SEAWEEDFS_FILER_URL", "http://192.168.10.10:8889").rstrip("/")
         try:
-            async with self.session.client(
-                "s3",
-                endpoint_url=self.endpoint_url,
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                region_name=self.region_name,
-            ) as s3:
-                await s3.list_buckets()
-                return True
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{filer_base}/buckets/{self.bucket}/",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    return resp.status < 500
         except Exception:
             return False
 
