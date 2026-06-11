@@ -703,10 +703,10 @@ def create_router(svc):
     async def admin_deactivate_user(request: Request):
         _require_admin_cookie_or_bearer(request)
         body = await request.json()
-        email = (body.get("user_email") or "").strip()
-        if not email:
-            raise HTTPException(status_code=400, detail="user_email required")
-        found = svc.rbac.set_user_active(email, False)
+        user_id = (body.get("user_id") or "").strip()
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id required")
+        found = svc.rbac.set_user_active_by_id(user_id, False)
         if not found:
             raise HTTPException(status_code=404, detail="User not found")
         return JSONResponse({"ok": True})
@@ -715,10 +715,10 @@ def create_router(svc):
     async def admin_activate_user(request: Request):
         _require_admin_cookie_or_bearer(request)
         body = await request.json()
-        email = (body.get("user_email") or "").strip()
-        if not email:
-            raise HTTPException(status_code=400, detail="user_email required")
-        found = svc.rbac.set_user_active(email, True)
+        user_id = (body.get("user_id") or "").strip()
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id required")
+        found = svc.rbac.set_user_active_by_id(user_id, True)
         if not found:
             raise HTTPException(status_code=404, detail="User not found")
         return JSONResponse({"ok": True})
@@ -727,10 +727,10 @@ def create_router(svc):
     async def admin_delete_user(request: Request):
         _require_admin_cookie_or_bearer(request)
         body = await request.json()
-        email = (body.get("user_email") or "").strip()
-        if not email:
-            raise HTTPException(status_code=400, detail="user_email required")
-        found = svc.rbac.delete_user_by_email(email)
+        user_id = (body.get("user_id") or "").strip()
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id required")
+        found = svc.rbac.delete_user_by_id(user_id)
         if not found:
             raise HTTPException(status_code=404, detail="User not found")
         return JSONResponse({"ok": True})

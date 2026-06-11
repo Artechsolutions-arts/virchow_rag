@@ -12,33 +12,33 @@ async function parseErrorDetail(
   }
 }
 
-export async function deactivateUser(email: string): Promise<void> {
+export async function deactivateUser(userId: string): Promise<void> {
   const res = await fetch("/api/manage/admin/deactivate-user", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_email: email }),
+    body: JSON.stringify({ user_id: userId }),
   });
   if (!res.ok) {
     throw new Error(await parseErrorDetail(res, "Failed to deactivate user"));
   }
 }
 
-export async function activateUser(email: string): Promise<void> {
+export async function activateUser(userId: string): Promise<void> {
   const res = await fetch("/api/manage/admin/activate-user", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_email: email }),
+    body: JSON.stringify({ user_id: userId }),
   });
   if (!res.ok) {
     throw new Error(await parseErrorDetail(res, "Failed to activate user"));
   }
 }
 
-export async function deleteUser(email: string): Promise<void> {
+export async function deleteUser(userId: string): Promise<void> {
   const res = await fetch("/api/manage/admin/delete-user", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_email: email }),
+    body: JSON.stringify({ user_id: userId }),
   });
   if (!res.ok) {
     throw new Error(await parseErrorDetail(res, "Failed to delete user"));

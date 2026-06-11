@@ -341,12 +341,39 @@ class RBACManager:
         finally:
             self._put_conn(conn)
 
+    def set_user_active_by_id(self, user_id: str, is_active: bool) -> bool:
+        """Set a user's active status by user ID. Returns True if user found."""
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute(
+                "UPDATE users SET is_active=%s WHERE id=%s",
+                (is_active, user_id)
+            )
+            affected = cur.rowcount
+            cur.close()
+            return affected > 0
+        finally:
+            self._put_conn(conn)
+
     def delete_user_by_email(self, email: str) -> bool:
         """Delete a user by email. Returns True if user found and deleted."""
         conn = self._get_conn()
         try:
             cur = self._cur(conn)
             cur.execute("DELETE FROM users WHERE email=%s", (email,))
+            affected = cur.rowcount
+            cur.close()
+            return affected > 0
+        finally:
+            self._put_conn(conn)
+
+    def delete_user_by_id(self, user_id: str) -> bool:
+        """Delete a user by user ID. Returns True if user found and deleted."""
+        conn = self._get_conn()
+        try:
+            cur = self._cur(conn)
+            cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
             affected = cur.rowcount
             cur.close()
             return affected > 0

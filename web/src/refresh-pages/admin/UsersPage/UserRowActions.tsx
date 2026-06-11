@@ -187,16 +187,16 @@ export default function UserRowActions({ user, onMutate }: UserRowActionsProps) 
         <CancelInviteModal email={user.email} onClose={closeModal} onMutate={onMutate} />
       )}
 
-      {modal === Modal.DEACTIVATE && (
-        <DeactivateUserModal email={user.email} onClose={closeModal} onMutate={onMutate} />
+      {modal === Modal.DEACTIVATE && user.id && (
+        <DeactivateUserModal userId={user.id} email={user.email} onClose={closeModal} onMutate={onMutate} />
       )}
 
-      {modal === Modal.ACTIVATE && (
-        <ActivateUserModal email={user.email} onClose={closeModal} onMutate={onMutate} />
+      {modal === Modal.ACTIVATE && user.id && (
+        <ActivateUserModal userId={user.id} email={user.email} onClose={closeModal} onMutate={onMutate} />
       )}
 
-      {modal === Modal.DELETE && (
-        <DeleteUserModal email={user.email} onClose={closeModal} onMutate={onMutate} />
+      {modal === Modal.DELETE && user.id && (
+        <DeleteUserModal userId={user.id} email={user.email} onClose={closeModal} onMutate={onMutate} />
       )}
 
       {modal === Modal.RESET_PASSWORD && (

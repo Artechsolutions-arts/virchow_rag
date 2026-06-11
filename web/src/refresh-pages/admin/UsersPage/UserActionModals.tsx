@@ -97,12 +97,14 @@ export function CancelInviteModal({
 // ---------------------------------------------------------------------------
 
 interface DeactivateUserModalProps {
+  userId: string;
   email: string;
   onClose: () => void;
   onMutate: () => void;
 }
 
 export function DeactivateUserModal({
+  userId,
   email,
   onClose,
   onMutate,
@@ -122,7 +124,7 @@ export function DeactivateUserModal({
             variant="danger"
             onClick={() =>
               runAction(
-                () => deactivateUser(email),
+                () => deactivateUser(userId),
                 "User deactivated",
                 () => {
                   onMutate();
@@ -154,12 +156,14 @@ export function DeactivateUserModal({
 // ---------------------------------------------------------------------------
 
 interface ActivateUserModalProps {
+  userId: string;
   email: string;
   onClose: () => void;
   onMutate: () => void;
 }
 
 export function ActivateUserModal({
+  userId,
   email,
   onClose,
   onMutate,
@@ -176,7 +180,7 @@ export function ActivateUserModal({
           <Button
             onClick={() =>
               runAction(
-                () => activateUser(email),
+                () => activateUser(userId),
                 "User activated",
                 () => {
                   onMutate();
@@ -206,12 +210,14 @@ export function ActivateUserModal({
 // ---------------------------------------------------------------------------
 
 interface DeleteUserModalProps {
+  userId: string;
   email: string;
   onClose: () => void;
   onMutate: () => void;
 }
 
 export function DeleteUserModal({
+  userId,
   email,
   onClose,
   onMutate,
@@ -231,7 +237,7 @@ export function DeleteUserModal({
             variant="danger"
             onClick={() =>
               runAction(
-                () => deleteUser(email),
+                () => deleteUser(userId),
                 "User deleted",
                 () => {
                   onMutate();
