@@ -32,7 +32,8 @@ services:
   # ── Ingestion API (port 8000) — OCR → chunk → embed → pgvector ───────────────
   ingest-api:
     build:
-      context: ./ingest
+      context: .
+      dockerfile: ingest/Dockerfile
     image: virchow_ingest:latest
     container_name: virchow_ingest_api
     restart: unless-stopped
@@ -70,8 +71,7 @@ services:
       SKIP_SYSTEM_USER_INIT: "true"
     volumes:
       - ./ingest/uploads:/app/uploads
-      - ./dots_ocr:/app/dots_ocr:ro
-      - ./weights:/app/weights:ro
+      - dotsocr_weights:/app/weights
     depends_on:
       redis:
         condition: service_healthy
@@ -93,7 +93,8 @@ services:
   # Run native + Docker simultaneously if you want: they share the same queue.
   ingest-worker:
     build:
-      context: ./ingest
+      context: .
+      dockerfile: ingest/Dockerfile
     image: virchow_ingest:latest
     container_name: virchow_ingest_worker
     restart: unless-stopped
@@ -130,12 +131,9 @@ services:
       LOG_LEVEL: INFO
       UPLOAD_WORKERS: "2"
       SKIP_SYSTEM_USER_INIT: "true"
-      HF_HOME: /tmp/hf_cache
-      TRANSFORMERS_CACHE: /tmp/hf_cache
     volumes:
       - ./ingest/uploads:/app/uploads
-      - ./dots_ocr:/app/dots_ocr:ro
-      - ./weights:/app/weights:ro
+      - dotsocr_weights:/app/weights
     depends_on:
       redis:
         condition: service_healthy
@@ -207,4 +205,5 @@ services:
   # Access via host.docker.internal:11434 — start with: ollama serve
 
 volumes:
-  hf_cache:    # persists ColPali base model across container recreations
+  hf_cache:        # persists ColPali base model across container recreations
+  dotsocr_weights: # persists DotsOCR model weights (~4 GB, downloaded on first run)

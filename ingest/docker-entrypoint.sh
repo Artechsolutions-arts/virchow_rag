@@ -37,6 +37,25 @@ wait_for() {
     echo "[entrypoint] $NAME ready ✓"
 }
 
+# ── Auto-download DotsOCR weights on first run ────────────────────────────────
+# Weights live in a named Docker volume (/app/weights) so they persist across
+# container restarts and only need to be downloaded once (~4 GB).
+WEIGHTS_DIR="/app/weights/DotsOCR"
+if [ ! -f "${WEIGHTS_DIR}/config.json" ]; then
+    echo "[entrypoint] DotsOCR weights not found — downloading from HuggingFace (rednote-hilab/dots.ocr, ~4 GB)..."
+    python3 - <<'PYEOF'
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="rednote-hilab/dots.ocr",
+    local_dir="/app/weights/DotsOCR",
+    ignore_patterns=["*.msgpack", "flax_model*", "tf_model*", "rust_model*", "*.ot"],
+)
+PYEOF
+    echo "[entrypoint] DotsOCR weights downloaded ✓"
+else
+    echo "[entrypoint] DotsOCR weights found ✓"
+fi
+
 # ── Wait for required services ─────────────────────────────────────────────────
 wait_for "${PG_HOST:-192.168.10.10}" "${PG_PORT:-5433}"    "PostgreSQL"
 wait_for "${REDIS_HOST:-redis}"       "${REDIS_PORT:-6379}" "Redis"

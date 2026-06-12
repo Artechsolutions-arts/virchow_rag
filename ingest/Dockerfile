@@ -45,7 +45,7 @@ RUN pip install --upgrade pip setuptools wheel
 # ═══════════════════════════════════════════════════════════════════════════════
 # LAYER 1 — Core lightweight packages (cache-stable; rebuild rarely)
 # ═══════════════════════════════════════════════════════════════════════════════
-COPY requirements.txt .
+COPY ingest/requirements.txt .
 RUN grep -vE 'torch|torchvision|transformers|sentence-transformers|qwen-vl-utils|modelscope|huggingface|colpali|accelerate' \
     requirements.txt > req_core.txt && \
     pip install -r req_core.txt
@@ -89,8 +89,10 @@ RUN pip install --force-reinstall "torchvision==0.21.0"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # APPLICATION CODE
+# Build context is the repo root so we can include dots_ocr alongside ingest code.
 # ═══════════════════════════════════════════════════════════════════════════════
-COPY . .
+COPY ingest/ ./
+COPY dots_ocr/ /app/dots_ocr/
 
 # ── Runtime environment ───────────────────────────────────────────────────────
 ENV PYTHONPATH="/app:/app/dots_ocr:/app/stg609_dots_ocr" \
@@ -108,7 +110,7 @@ RUN mkdir -p /app/uploads /app/data /app/weights/hub \
     && chmod +x /usr/local/bin/docker-entrypoint.sh 2>/dev/null || true
 
 # ── Entrypoint script ─────────────────────────────────────────────────────────
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY ingest/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && chown appuser:appuser /usr/local/bin/docker-entrypoint.sh
 

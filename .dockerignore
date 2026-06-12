@@ -1,0 +1,18 @@
+# Root-level .dockerignore — used when ingest build context is "."
+.git
+.github
+web/
+retrieval/
+weights/
+ingest/uploads/
+ingest/venv/
+ingest/venv_native/
+ingest/logs/
+ingest/worker_logs.txt
+ingest/*.log
+ingest/tests/
+ingest/__pycache__
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.md
